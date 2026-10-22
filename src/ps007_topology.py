@@ -74,6 +74,7 @@ def setup_network(test_mode=False, run_xterms=False, duration=90):
     info("*** Configuring Router (r1) & Starting radvd daemon\n")
     r1.cmd('sysctl -w net.ipv6.conf.all.forwarding=1')
     r1.cmd('ip -6 addr add fd00:abcd::1/64 dev r1-eth0')
+    r1.cmd('ip -6 addr add fe80::1/64 dev r1-eth0 2>/dev/null || true')
 
     radvd_conf = """
 interface r1-eth0 {

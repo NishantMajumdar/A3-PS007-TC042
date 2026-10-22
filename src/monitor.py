@@ -44,7 +44,8 @@ C_RED   = "\033[1;31m"
 # --- CORE ENGINES INITIALIZATION (MODE A: PRIMARY BLACK-BOX TRACKER) ---
 pseudonym_mgr = PseudonymManager(epoch_length_seconds=300.0, default_addr_ttl=120.0)
 attribution_engine = AttributionEngine(pseudonym_mgr)
-ra_detector = RogueRADetector(authorized_routers=["fd00:abcd::1"])
+ra_detector = RogueRADetector(authorized_routers=["fd00:abcd::1", "fe80::1"], authorized_vlan=4101)
+
 ndp_detector = NDPAbuseDetector()
 telemetry = TelemetryEmitter(log_path="events.jsonl", ws_port=8765)
 recent_security_alerts = []
@@ -127,12 +128,19 @@ def process_packet(packet):
     """Passively captures mirrored IPv6 packets and updates device discovery & packet metrics."""
     global total_sniffed_raw
     if IPv6 in packet:
+        # All genuine mirrored traffic from s1 carries an ingress Dot1Q VLAN tag.
+        # Drop untagged packets (multicast frames flooded by OVS NORMAL action)
+        # to prevent duplicate accounting and false port-attribution errors.
+        if Dot1Q not in packet:
+            return
+
         total_sniffed_raw += 1
+        vlan_id = packet[Dot1Q].vlan
         ipv6_src = packet[IPv6].src
         ipv6_dst = packet[IPv6].dst
 
-        # Ignore link-local, loopback, and monitor's own interface
-        if (ipv6_src.startswith("fe80:") and "::" not in ipv6_src) or ipv6_src == "::1" or ipv6_src == "fd00:abcd::2":
+        # Ignore loopback and monitor's own interface
+        if ipv6_src == "::1" or ipv6_src == "fd00:abcd::2":
             return
 
         ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -183,6 +191,7 @@ def process_packet(packet):
             if ICMPv6NDOptPrefixInfo in packet:
                 for opt in packet.getlayer(ICMPv6NDOptPrefixInfo):
                     prefixes.append((getattr(opt, 'prefix', ''), getattr(opt, 'prefixlen', 64)))
+            vlan_id = packet[Dot1Q].vlan if Dot1Q in packet else None
             ra_alerts = ra_detector.inspect_ra(
                 src_ip=ipv6_src,
                 router_lifetime=getattr(ra, 'routerlifetime', 1800),
@@ -191,8 +200,10 @@ def process_packet(packet):
                 other_flag=getattr(ra, 'O', 0),
                 advertised_prefixes=prefixes,
                 pseudonym=pseudonym_mgr.lookup_pseudonym_by_addr("default", ipv6_src, now_epoch),
-                current_time=now_epoch
+                current_time=now_epoch,
+                vlan_id=vlan_id
             )
+
             for alert in ra_alerts:
                 with db_lock:
                     recent_security_alerts.insert(0, (ts, alert))
@@ -313,19 +324,16 @@ def display_dashboard():
             ndp_detector.purge_expired_pseudonyms(active_pseudos)
 
         with db_lock:
-            # 1. Check for session timeout (stopped sending packets midway / failed update)
+            # 1. Update session activity state (ACTIVE vs IDLE)
             for sid, rec in session_records.items():
                 last_seen_epoch = rec.get("last_seen_ts", now)
                 silence = now - last_seen_epoch
-                if rec["status"] == "AUTHENTICATED":
-                    if silence > 20:
-                        rec["status"] = "FAILED TO UPDATE"
-                        event = (datetime.datetime.now().strftime("%H:%M:%S"), "[FAILED ]", C_RED, f"{sid} stopped packets: FAILED TO UPDATE")
-                        latest_events.insert(0, event)
-                        if len(latest_events) > 5:
-                            latest_events.pop()
-                    elif silence > 10:
-                        rec["status"] = "STALE (TIMEOUT)"
+                if rec["status"] in ("AUTHENTICATED", "ACTIVE", "IDLE"):
+                    if silence > 30:
+                        rec["status"] = "IDLE"
+                    else:
+                        rec["status"] = "AUTHENTICATED"
+
 
             # 2. Check unauthenticated devices sending network traffic without authenticating
             for u_ip, u_rec in unauthenticated_devices.items():
@@ -453,23 +461,28 @@ def display_dashboard():
         chains_printed = 0
         for s in auth_sessions:
             sid = s.get("pseudonym", s["session_id"])
-            if s.get("status") == "FAILED TO UPDATE":
+            st = s.get("status", "AUTHENTICATED")
+            act_ip = s["ip_history"][-1]
+            st_color = C_GREEN if st == "AUTHENTICATED" else C_DIM
+            st_text = "[ACTIVE]" if st == "AUTHENTICATED" else "[IDLE]"
+
+            if len(s["ip_history"]) > 1:
                 chains_printed += 1
-                act_ip = s["ip_history"][-1]
-                line1 = f" {sid}  [FAILED TO UPDATE] Last: {act_ip}"
-                pad1 = max(0, W - 2 - len(line1))
-                print(f"│ {C_RED}{sid}{C_RESET}  {C_RED}[FAILED TO UPDATE]{C_RESET} {C_DIM}Last: {act_ip}{C_RESET}" + (" " * pad1) + "│")
-            elif len(s["ip_history"]) > 1:
-                chains_printed += 1
-                act_ip = s["ip_history"][-1]
-                line1 = f" {sid} ({s['role']})  [ACTIVE] {act_ip}"
-                pad1 = max(0, W - 2 - len(line1))
-                print(f"│ {C_MAG}{sid}{C_RESET} {C_DIM}({s['role']}){C_RESET}  {C_CYAN}[ACTIVE] {act_ip}{C_RESET}" + (" " * pad1) + "│")
+                rot_count = len(s["ip_history"]) - 1
+                vis_len1 = len(f" {sid} ({s['role']})  {st_text} {act_ip} ({rot_count}x rotated)")
+                pad1 = max(0, W - 2 - vis_len1)
+                print(f"│ {C_MAG}{sid}{C_RESET} {C_DIM}({s['role']}){C_RESET}  {st_color}{st_text}{C_RESET} {C_CYAN}{act_ip}{C_RESET} {C_DIM}({rot_count}x rotated){C_RESET}" + (" " * pad1) + "│")
                 for i_old, old_ip in enumerate(reversed(s["ip_history"][:-1]), 1):
                     tag = f"[PREV {i_old}]"
-                    line2 = f"               {tag} {old_ip}"
-                    pad2 = max(0, W - 2 - len(line2))
+                    vis_len2 = len(f"               {tag} {old_ip}")
+                    pad2 = max(0, W - 2 - vis_len2)
                     print(f"│               {C_DIM}{tag} {old_ip}{C_RESET}" + (" " * pad2) + "│")
+            elif s.get("pkts", 0) > 0 or s.get("session_id", "").startswith("SES-"):
+                chains_printed += 1
+                vis_len1 = len(f" {sid} ({s['role']})  {st_text} {act_ip}")
+                pad1 = max(0, W - 2 - vis_len1)
+                print(f"│ {C_MAG}{sid}{C_RESET} {C_DIM}({s['role']}){C_RESET}  {st_color}{st_text}{C_RESET} {C_CYAN}{act_ip}{C_RESET}" + (" " * pad1) + "│")
+
 
         if chains_printed == 0:
             empty_rot = " No address rotations triggered yet (RFC 8981 rotates at ~60s)..."

@@ -86,7 +86,13 @@ class AttributionEngine:
     def _get_session_id_for_vlan(self, vlan_id: int) -> str:
         """Derives a stable session identifier from the link anchor (vlan_id)."""
         if vlan_id not in self._vlan_to_session_id:
-            port = vlan_id - 4100 if vlan_id >= 4100 else vlan_id
+            if vlan_id >= 4100:
+                port = vlan_id - 4100
+            elif vlan_id >= 5:
+                # 12-bit 802.1Q wire VID: (4100 + in_p) % 4096 = 4 + in_p
+                port = vlan_id - 4
+            else:
+                port = vlan_id
             self._vlan_to_session_id[vlan_id] = f"SES-PORT{port:02d}"
         return self._vlan_to_session_id[vlan_id]
 

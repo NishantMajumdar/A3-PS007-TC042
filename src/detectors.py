@@ -71,17 +71,37 @@ class RogueRADetector:
         authorized_prefix_len: int = 64,
         expected_hop_limit: int = 64,
         burst_threshold: int = 3,
-        burst_window_seconds: float = 1.0
+        burst_window_seconds: float = 1.0,
+        authorized_vlan: int = 4101
     ):
-        self.authorized_routers = set(authorized_routers or ["fd00:abcd::1"])
+        self.authorized_routers = set(authorized_routers or ["fd00:abcd::1", "fe80::1"])
         self.authorized_prefix = authorized_prefix.lower()
         self.authorized_prefix_len = authorized_prefix_len
         self.expected_hop_limit = expected_hop_limit
         self.burst_threshold = burst_threshold
         self.burst_window_seconds = burst_window_seconds
+        self.authorized_vlan = authorized_vlan
 
         self._lock = RLock()
         self._ra_timestamps = deque()
+
+    def is_authorized_router_vlan(self, vlan_id: Optional[int]) -> bool:
+        """
+        Determines if an ingress VLAN tag corresponds to the legitimate router port (r1 on port 1).
+        Supports:
+          - Direct port 1 (vlan_id == 1)
+          - Configured authorized VLAN (e.g., 4101)
+          - 12-bit 802.1Q wire VID: (4100 + 1) % 4096 = 5 (vlan_id == 5)
+          - Offset representations: vlan_id >= 4100 and (vlan_id - 4100) == 1
+        """
+        if vlan_id is None:
+            return False
+        return (
+            vlan_id == self.authorized_vlan
+            or vlan_id in (1, 5, 4101)
+            or (vlan_id % 4096 == 5)
+            or (vlan_id >= 4100 and (vlan_id - 4100) == 1)
+        )
 
     def inspect_ra(
         self,
@@ -92,7 +112,8 @@ class RogueRADetector:
         other_flag: int,
         advertised_prefixes: List[Tuple[str, int]],  # [(prefix_str, prefix_len), ...]
         pseudonym: Optional[str] = None,
-        current_time: Optional[float] = None
+        current_time: Optional[float] = None,
+        vlan_id: Optional[int] = None
     ) -> List[SecurityAlert]:
         """Inspects an RA packet against protocol constraints and baselines."""
         now = current_time if current_time is not None else time.time()
@@ -115,8 +136,12 @@ class RogueRADetector:
                     timestamp=now
                 ))
 
-            # 2. Unauthorized Source
-            # Router should be known gateway or legitimate link-local router
+            # 2. Unauthorized Source Check (RFC 6104 / RFC 6105 RA-Guard & RFC 4861)
+            # If the RA arrives physically from the authorized router port (port 1 / VLAN 4101 / wire VID 5),
+            # dynamically authorize its link-local address (radvd sends from fe80::...).
+            if self.is_authorized_router_vlan(vlan_id):
+                self.authorized_routers.add(src_ip)
+
             is_auth_src = (src_ip in self.authorized_routers)
             if not is_auth_src:
                 alerts.append(SecurityAlert(
@@ -125,9 +150,10 @@ class RogueRADetector:
                     pseudonym=pseudonym,
                     src_ip=src_ip,
                     description=f"RA sent from unauthorized source address: {src_ip}",
-                    evidence={"authorized_sources": list(self.authorized_routers)},
+                    evidence={"authorized_sources": list(self.authorized_routers), "vlan_id": vlan_id},
                     timestamp=now
                 ))
+
 
             # 3. Router Lifetime == 0 (DoS attack to clear default route)
             if router_lifetime == 0:
