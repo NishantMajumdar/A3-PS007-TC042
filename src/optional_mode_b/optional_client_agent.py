@@ -1,8 +1,27 @@
 #!/usr/bin/env python3
+"""
+optional_mode_b/optional_client_agent.py - Optional Mode B IoT Client Agent
+
+Role:
+  Optional active software agent for managed IoT endpoints.
+  Negotiates an ephemeral session key S_0 and performs cryptographic key ratcheting
+  S_{i+1} = SHA256(S_i) with replay-protected counters upon RFC 8981 address rotation.
+
+NOTE:
+  In Mode A (the primary system mode), black-box IoT clients DO NOT run this agent.
+  Instead, black-box devices simply transmit standard application traffic and rely on
+  passive DAD Neighbor Solicitation attribution at the monitor.
+"""
+
 import socket
 import subprocess
 import time
 import sys
+import os
+
+# Allow importing from parent directory or local package
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from optional_mode_b.ratchet import ratchet_step, compute_ratchet_tag
 
 MONITOR_IP = "fd00:abcd::2"
 PORT = 9000
@@ -51,7 +70,8 @@ def main():
     sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
     sock.settimeout(5.0)
 
-    print("[*] Starting Anonymous IoT Client Agent (Zero Permanent Info Mode)...")
+    print("[*] Starting Optional Mode B IoT Client Agent (Active Ratchet Mode)...")
+    print("[*] Note: Primary Mode A tracks black-box IoT clients passively without this agent.")
     
     current_ip = get_global_ipv6()
     while not current_ip:
@@ -86,11 +106,8 @@ def main():
             print(f"[+] Received Ephemeral Cryptographic Token: {raw_token}")
             print(f"[+] Assigned Pseudonym: {session_id}")
     except socket.timeout:
-        print("[-] Monitor did not respond to AUTH_REQUEST. Exiting.")
+        print("[-] Monitor did not respond to AUTH_REQUEST. (Is Mode B enabled on monitor?) Exiting.")
         sys.exit(1)
-        
-    # Import ratchet helpers
-    from ratchet import ratchet_step, compute_ratchet_tag
 
     # Watchdog loop: check for RFC 8981 address rotation every 3 seconds
     print(f"\n[*] Starting Watchdog Loop (monitoring RFC 8981 rotation every 3s)...")

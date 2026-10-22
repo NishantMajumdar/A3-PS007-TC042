@@ -1,0 +1,13 @@
+Scenario,Detector,TPR,FPR,Latency_p50_ms,Latency_p95_ms
+Rogue RA Attack,Baseline,0.0000,0.0000,0.00,0.00
+Rogue RA Attack,PS-007 (Ours),1.0000,0.0000,100.00,100.00
+Rotating NDP Flood,Baseline,1.0000,0.0000,1000.00,1000.00
+Rotating NDP Flood,PS-007 (Ours),1.0000,0.0000,750.00,750.00
+Target Scanning Scan,Baseline,0.0000,0.0000,0.00,0.00
+Target Scanning Scan,PS-007 (Ours),1.0000,0.0000,750.00,750.00
+Benign Stress: Simultaneous Rotation,Baseline,N/A,0.0000,N/A,N/A
+Benign Stress: Simultaneous Rotation,PS-007 (Ours),N/A,0.0000,N/A,N/A
+Benign Stress: Device Reboot / SLAAC,Baseline,N/A,0.0000,N/A,N/A
+Benign Stress: Device Reboot / SLAAC,PS-007 (Ours),N/A,0.0000,N/A,N/A
+Benign Stress: Bursty Sensor Telemetry,Baseline,N/A,0.0000,N/A,N/A
+Benign Stress: Bursty Sensor Telemetry,PS-007 (Ours),N/A,0.0000,N/A,N/A

@@ -25,7 +25,7 @@ def setup_network(test_mode=False, run_xterms=False, duration=90):
     net = Mininet(controller=None, switch=OVSKernelSwitch)
 
     info("*** Creating Switch (s1)\n")
-    s1 = net.addSwitch('s1')
+    s1 = net.addSwitch('s1', protocols='OpenFlow10,OpenFlow13')
 
     info("*** Creating Nodes: Router (r1), Monitor (m1), and 5 IoT Clients (h1-h5)\n")
     r1 = net.addHost('r1', sysctls={'net.ipv6.conf.all.disable_ipv6': 0})
@@ -50,9 +50,26 @@ def setup_network(test_mode=False, run_xterms=False, duration=90):
         with open(f'/tmp/mininet_pids/{host.name}.pid', 'w') as f:
             f.write(str(host.pid))
 
-    info("*** Injecting OpenFlow Rule: Flooding all switch traffic for passive monitoring\n")
-    # Priority 100 overrides default MAC learning, forcing s1 to flood all packets to m1
-    s1.cmd('ovs-ofctl add-flow s1 priority=100,actions=flood')
+    info("*** Configuring Switch Flows: NORMAL forwarding + Per-Port Mirror with VLAN (4100+in_port)\n")
+    s1.cmd('ovs-vsctl set bridge s1 protocols=OpenFlow10,OpenFlow13')
+    s1.cmd('ovs-ofctl -O OpenFlow13 del-flows s1')
+
+    # Determine m1 openflow port on s1
+    m1_link = net.linksBetween(m1, s1)[0]
+    m1_port = s1.ports[m1_link.intf2]
+
+    # Default fallback flow: NORMAL L2/L3 forwarding
+    s1.cmd('ovs-ofctl -O OpenFlow13 add-flow s1 "table=0,priority=1,actions=NORMAL"')
+
+    # Ingress from m1: NORMAL forwarding only (prevent mirroring m1 traffic back to m1)
+    s1.cmd(f'ovs-ofctl -O OpenFlow13 add-flow s1 "table=0,priority=100,in_port={m1_port},actions=NORMAL"')
+
+    # Ingress from r1 and clients: NORMAL forwarding + mirrored copy with pushed VLAN (4100+in_port) to m1
+    for node in [r1] + clients:
+        link = net.linksBetween(node, s1)[0]
+        in_p = s1.ports[link.intf2]
+        vlan_id = 4100 + in_p
+        s1.cmd(f'ovs-ofctl -O OpenFlow13 add-flow s1 "table=0,priority=100,in_port={in_p},actions=NORMAL,push_vlan:0x8100,set_field:{vlan_id}->vlan_vid,output:{m1_port}"')
 
     info("*** Configuring Router (r1) & Starting radvd daemon\n")
     r1.cmd('sysctl -w net.ipv6.conf.all.forwarding=1')
@@ -79,6 +96,8 @@ interface r1-eth0 {
 
     info("*** Configuring Monitor (m1)\n")
     m1.cmd('ip -6 addr add fd00:abcd::2/64 dev m1-eth0')
+    m1.cmd('ethtool -K m1-eth0 rxvlan off 2>/dev/null || true')
+    m1.cmd('ethtool -K m1-eth0 rx-vlan-offload off 2>/dev/null || true')
 
     info("*** Configuring Clients (h1-h5) for RFC 8981 Fast Address Rotation (60s)\n")
     for i, h in enumerate(clients, start=1):
@@ -114,17 +133,17 @@ interface r1-eth0 {
     if test_mode:
         run_automated_test(net, clients, m1, duration)
     elif run_xterms:
-        info("*** Launching XTerm windows for m1 and clients...\n")
+        info("*** Launching XTerm windows for m1 and client shells...\n")
         net.terms += [m1.pexec('xterm -title "Monitor (m1)" -e "python3 monitor.py" &')]
         for i, h in enumerate(clients, start=1):
-            net.terms += [h.pexec(f'xterm -title "Client h{i}" -e "python3 client.py" &')]
+            net.terms += [h.pexec(f'xterm -title "Black-Box Client h{i}" -e "env PS1=\'mininet:h{i}# \' bash" &')]
         CLI(net)
     else:
         info("*** Manual Mode: Launching Mininet CLI\n")
         info("*** Instructions:\n")
         info("    Start Monitor on m1 : m1 python3 monitor.py &\n")
-        info("    Start Clients       : h1 python3 client.py & (repeat for h2-h5)\n")
-        info("    Or open xterm       : xterm m1 h1\n\n")
+        info("    Black-Box Clients   : h1..h5 run ZERO software. Test manually: h1 ping -6 fd00:abcd::1\n")
+        info("    Or open launcher    : ./launch_node.sh h1\n\n")
         CLI(net)
 
     info("*** Stopping Network and Cleaning Up\n")
@@ -135,7 +154,7 @@ interface r1-eth0 {
 
 def run_automated_test(net, clients, m1, duration=90):
     cwd = os.getcwd()
-    info("*** [TEST] Starting Autonomous End-to-End Test...\n")
+    info("*** [TEST] Starting Autonomous End-to-End Test (Mode A: Zero-Software Black-Box Clients)...\n")
     
     # Clean old logs
     os.system('rm -f /tmp/monitor.log /tmp/client_h*.log')
@@ -145,28 +164,13 @@ def run_automated_test(net, clients, m1, duration=90):
     monitor_proc = m1.popen(f'env NO_CLEAR=1 python3 {cwd}/monitor.py', stdout=open('/tmp/monitor.log', 'w'), stderr=subprocess.STDOUT)
     time.sleep(2)
 
-    # Start client agents on h1-h5
-    client_procs = []
-    for i, h in enumerate(clients, start=1):
-        info(f"*** [TEST] Launching client.py on h{i}...\n")
-        proc = h.popen(f'python3 {cwd}/client.py', stdout=open(f'/tmp/client_h{i}.log', 'w'), stderr=subprocess.STDOUT)
-        client_procs.append(proc)
-        time.sleep(0.5)
-
-    info("\n*** [TEST] All 5 clients launched! Initializing authentication...\n")
+    # Client nodes run absolutely nothing automatically
+    info("*** [TEST] Client nodes (h1-h5) running ZERO processes (True Black Box).\n")
+    info("*** [TEST] Waiting for kernel SLAAC and DAD Neighbor Solicitations...\n")
     time.sleep(5)
 
-    print("\n--- INITIAL REGISTRATION LOGS ---")
-    for i in range(1, 6):
-        log_file = f'/tmp/client_h{i}.log'
-        if os.path.exists(log_file):
-            with open(log_file) as f:
-                content = f.read().strip()
-                last_line = content.splitlines()[-1] if content.splitlines() else "starting..."
-                print(f"  [h{i}] {last_line}")
-
-    info(f"\n*** [TEST] Entering rotation observation window ({duration}s)...\n")
-    info("*** [TEST] Kernel preferred lifetime is 60s. Watching for RFC 8981 address rotation...\n\n")
+    info(f"\n*** [TEST] Entering observation window ({duration}s)...\n")
+    info("*** [TEST] You can run commands manually via './launch_node.sh h1' in another terminal.\n\n")
 
     start_time = time.time()
     last_print = 0
@@ -176,18 +180,18 @@ def run_automated_test(net, clients, m1, duration=90):
         
         if elapsed - last_print >= 10:
             last_print = elapsed
-            print(f"[*] Elapsed: {elapsed:2d}s / {duration}s (Address rotation window: ~60s)...")
-            # Check for any rotation detected in client logs
+            print(f"[*] Elapsed: {elapsed:2d}s / {duration}s...")
+            # Check for kernel address rotation
             rotations = 0
-            for i in range(1, 6):
-                log_file = f'/tmp/client_h{i}.log'
-                if os.path.exists(log_file):
-                    with open(log_file) as f:
-                        txt = f.read()
-                        if "ROTATION DETECTED" in txt:
-                            rotations += 1
+            for i, h in enumerate(clients, start=1):
+                addr_count = h.cmd("ip -6 addr show dev h" + str(i) + "-eth0 | grep 'scope global temporary' | wc -l").strip()
+                try:
+                    if int(addr_count) >= 2:
+                        rotations += 1
+                except Exception:
+                    pass
             if rotations > 0:
-                print(f"    --> [!] {rotations}/5 clients have triggered address rotation and sent HMAC updates!")
+                print(f"    --> [!] {rotations}/5 black-box clients have kernel RFC 8981 rotations active!")
         time.sleep(1)
 
     print("\n" + "=" * 70)
@@ -201,21 +205,14 @@ def run_automated_test(net, clients, m1, duration=90):
             for line in lines[-30:]:
                 sys.stdout.write(line)
 
-    print("\n--- CLIENT ROTATION EVENT STATUS ---")
-    for i in range(1, 6):
-        log_file = f'/tmp/client_h{i}.log'
-        if os.path.exists(log_file):
-            with open(log_file) as f:
-                txt = f.read()
-                rotated = "ROTATION DETECTED" in txt
-                ack_got = "verified with Monitor" in txt
-                print(f"  IoT Client h{i}: Rotated={rotated} | HMAC Verified={ack_got}")
+    print("\n--- CLIENT KERNEL ADDRESS STATUS ---")
+    for i, h in enumerate(clients, start=1):
+        addrs = h.cmd(f"ip -6 -o addr show dev h{i}-eth0 scope global | awk '{{print $4}}'").strip().splitlines()
+        print(f"  IoT Client h{i} (Black Box): Current Kernel Addresses = {addrs}")
 
-    # Terminate background processes
-    for p in client_procs:
-        p.terminate()
     monitor_proc.terminate()
-    print("\n*** [TEST] Automated End-to-End Test Completed.\n")
+    print("\n*** [TEST] Test Completed.\n")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PS-007 IPv6 IoT Simulation Topology')
