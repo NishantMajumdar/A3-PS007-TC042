@@ -47,6 +47,34 @@ class TestDetectors(unittest.TestCase):
         types = [a.alert_type for a in alerts]
         self.assertIn("ROGUE_RA_UNAUTHORIZED_SOURCE", types)
 
+    def test_router_vlan_dynamic_link_local_learning(self):
+        # Router r1 sends RA with link-local src from wire VLAN 5 (4101 % 4096)
+        alerts = self.ra_detector.inspect_ra(
+            src_ip="fe80::79:72ff:fefa:11fa",
+            router_lifetime=1800,
+            cur_hop_limit=64,
+            managed_flag=0,
+            other_flag=0,
+            advertised_prefixes=[("fd00:abcd::", 64)],
+            vlan_id=5
+        )
+        self.assertEqual(len(alerts), 0)
+        self.assertIn("fe80::79:72ff:fefa:11fa", self.ra_detector.authorized_routers)
+
+    def test_rogue_ra_on_client_port_rejected(self):
+        # Host on client port (vlan 8 / h2) attempts to send RA
+        alerts = self.ra_detector.inspect_ra(
+            src_ip="fe80::dead:beef",
+            router_lifetime=1800,
+            cur_hop_limit=64,
+            managed_flag=0,
+            other_flag=0,
+            advertised_prefixes=[("fd00:abcd::", 64)],
+            vlan_id=8
+        )
+        types = [a.alert_type for a in alerts]
+        self.assertIn("ROGUE_RA_UNAUTHORIZED_SOURCE", types)
+
     def test_rogue_ra_lifetime_zero_dos(self):
         alerts = self.ra_detector.inspect_ra(
             src_ip="fd00:abcd::1",

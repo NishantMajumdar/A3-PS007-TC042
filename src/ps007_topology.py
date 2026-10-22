@@ -63,6 +63,8 @@ def setup_network(test_mode=False, run_xterms=False, duration=90):
 
     # Ingress from m1: NORMAL forwarding only (prevent mirroring m1 traffic back to m1)
     s1.cmd(f'ovs-ofctl -O OpenFlow13 add-flow s1 "table=0,priority=100,in_port={m1_port},actions=NORMAL"')
+    # Prevent switch from flooding broadcast/multicast NORMAL traffic to m1 (m1 receives mirrored copies only)
+    s1.cmd(f'ovs-ofctl mod-port s1 {m1_port} no-flood')
 
     # Ingress from r1 and clients: NORMAL forwarding + mirrored copy with pushed VLAN (4100+in_port) to m1
     for node in [r1] + clients:
