@@ -87,21 +87,19 @@ class RogueRADetector:
 
     def is_authorized_router_vlan(self, vlan_id: Optional[int]) -> bool:
         """
-        Determines if an ingress VLAN tag corresponds to the legitimate router port (r1 on port 1).
-        Supports:
-          - Direct port 1 (vlan_id == 1)
-          - Configured authorized VLAN (e.g., 4101)
-          - 12-bit 802.1Q wire VID: (4100 + 1) % 4096 = 5 (vlan_id == 5)
-          - Offset representations: vlan_id >= 4100 and (vlan_id - 4100) == 1
+        Determines if an ingress VLAN tag corresponds strictly to legitimate router port 1 (r1).
+        Exclusively permits physical switch port 1.
+        Any other ingress port (ports 2, 3, 4, ..., 8, 9, etc.) is strictly unauthorized.
         """
         if vlan_id is None:
             return False
-        return (
-            vlan_id == self.authorized_vlan
-            or vlan_id in (1, 5, 4101)
-            or (vlan_id % 4096 == 5)
-            or (vlan_id >= 4100 and (vlan_id - 4100) == 1)
-        )
+        if vlan_id >= 4100:
+            port = vlan_id - 4100
+        elif vlan_id >= 5:
+            port = vlan_id - 4
+        else:
+            port = vlan_id
+        return port == 1
 
     def inspect_ra(
         self,
@@ -136,14 +134,24 @@ class RogueRADetector:
                     timestamp=now
                 ))
 
-            # 2. Unauthorized Source Check (RFC 6104 / RFC 6105 RA-Guard & RFC 4861)
-            # If the RA arrives physically from the authorized router port (port 1 / VLAN 4101 / wire VID 5),
-            # dynamically authorize its link-local address (radvd sends from fe80::...).
-            if self.is_authorized_router_vlan(vlan_id):
+            # 2. Port and Source Authorization (RFC 6104 / RFC 6105 RA-Guard & RFC 4861)
+            # RAs are exclusively authorized from physical router port 1.
+            # Any RA arriving on ANY other port (port 2, 3, 4, ..., 8, 9, etc.) is strictly unauthorized.
+            is_router_port = self.is_authorized_router_vlan(vlan_id)
+            if is_router_port:
                 self.authorized_routers.add(src_ip)
 
-            is_auth_src = (src_ip in self.authorized_routers)
-            if not is_auth_src:
+            if vlan_id is not None and not is_router_port:
+                alerts.append(SecurityAlert(
+                    alert_type="ROGUE_RA_UNAUTHORIZED_SOURCE",
+                    severity="CRITICAL",
+                    pseudonym=pseudonym,
+                    src_ip=src_ip,
+                    description=f"Rogue RA intercepted on unauthorized access port (VLAN {vlan_id}) from {src_ip}",
+                    evidence={"vlan_id": vlan_id, "authorized_port": 1, "authorized_sources": list(self.authorized_routers)},
+                    timestamp=now
+                ))
+            elif not (src_ip in self.authorized_routers):
                 alerts.append(SecurityAlert(
                     alert_type="ROGUE_RA_UNAUTHORIZED_SOURCE",
                     severity="CRITICAL",

@@ -103,6 +103,10 @@ class PseudonymManager:
         return self._tenant_stores[tenant_id]
 
     @property
+    def epoch_length(self) -> float:
+        return self.epoch_length_seconds
+
+    @property
     def current_epoch_id(self) -> int:
         with self._lock:
             return self._epoch_id
@@ -194,6 +198,23 @@ class PseudonymManager:
             store.anchor_to_session[anchor_id] = session_id
 
             return session, pseudonym
+
+    def get_or_create_session_pseudonym(
+        self,
+        tenant_id: str,
+        session_id: str,
+        current_time: float = None,
+        anchor_id: Optional[str] = None
+    ) -> str:
+        """Helper to get or create an active ephemeral pseudonym for a session."""
+        anchor = anchor_id or f"session-{session_id}"
+        _, pseudonym = self.get_or_create_session(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            anchor_id=anchor,
+            current_time=current_time
+        )
+        return pseudonym
 
     def get_session_by_anchor(
         self,

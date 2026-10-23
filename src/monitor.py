@@ -12,6 +12,7 @@ r"""
 
 import os
 import sys
+import json
 import time
 import socket
 import hmac
@@ -127,121 +128,224 @@ def network_scanner():
 def process_packet(packet):
     """Passively captures mirrored IPv6 packets and updates device discovery & packet metrics."""
     global total_sniffed_raw
-    if IPv6 in packet:
-        # All genuine mirrored traffic from s1 carries an ingress Dot1Q VLAN tag.
-        # Drop untagged packets (multicast frames flooded by OVS NORMAL action)
-        # to prevent duplicate accounting and false port-attribution errors.
-        if Dot1Q not in packet:
-            return
+    try:
+        if IPv6 in packet:
+            # All genuine mirrored traffic from s1 carries an ingress Dot1Q VLAN tag.
+            # Drop untagged packets (multicast frames flooded by OVS NORMAL action)
+            # to prevent duplicate accounting and false port-attribution errors.
+            if Dot1Q not in packet:
+                return
 
-        total_sniffed_raw += 1
-        vlan_id = packet[Dot1Q].vlan
-        ipv6_src = packet[IPv6].src
-        ipv6_dst = packet[IPv6].dst
+            total_sniffed_raw += 1
+            vlan_id = packet[Dot1Q].vlan
+            ipv6_src = packet[IPv6].src
+            ipv6_dst = packet[IPv6].dst
 
-        # Ignore loopback and monitor's own interface
-        if ipv6_src == "::1" or ipv6_src == "fd00:abcd::2":
-            return
+            # Ignore loopback and monitor's own interface
+            if ipv6_src == "::1" or ipv6_src == "fd00:abcd::2":
+                return
 
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
-        now_epoch = time.time()
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            now_epoch = time.time()
 
-        # 1. Attribution Engine: inspect mirrored Dot1Q frame and DAD NS (drops MACs at ingress)
-        attr_event = attribution_engine.process_raw_scapy_packet(packet, current_time=now_epoch)
-        if attr_event and attr_event.event_type == "BIND_DAD":
-            with db_lock:
-                sid = attr_event.session_id
-                target_ip = attr_event.target_addr
-                p = attr_event.pseudonym
-                if sid not in session_records:
-                    session_records[sid] = {
-                        "role": "IoT Device",
-                        "status": "AUTHENTICATED",
-                        "session_id": sid,
-                        "pseudonym": p,
-                        "active_ip": target_ip,
-                        "ip_history": [target_ip],
-                        "pkts": 1,
-                        "rotations": 0,
-                        "first_seen": ts,
-                        "first_seen_ts": now_epoch,
-                        "last_seen": ts,
-                        "last_seen_ts": now_epoch
-                    }
-                else:
-                    rec = session_records[sid]
-                    if target_ip not in rec["ip_history"]:
-                        rec["ip_history"].append(target_ip)
-                        rec["active_ip"] = target_ip
-                        rec["rotations"] += 1
-                        rec["pseudonym"] = p
-                        rec["status"] = "AUTHENTICATED"
-                ip_to_session[target_ip] = sid
-                if target_ip in unauthenticated_devices:
-                    del unauthenticated_devices[target_ip]
-                event = (ts, "[BIND DAD]", C_GREEN, f"DAD bound {target_ip} -> {p} ({sid})")
-                latest_events.insert(0, event)
-                if len(latest_events) > 5: latest_events.pop()
-                telemetry.emit("bind", attr_event.to_dict())
-
-        # 2. Rogue RA Inspection
-        if ICMPv6ND_RA in packet:
-            ra = packet[ICMPv6ND_RA]
-            prefixes = []
-            if ICMPv6NDOptPrefixInfo in packet:
-                for opt in packet.getlayer(ICMPv6NDOptPrefixInfo):
-                    prefixes.append((getattr(opt, 'prefix', ''), getattr(opt, 'prefixlen', 64)))
-            vlan_id = packet[Dot1Q].vlan if Dot1Q in packet else None
-            ra_alerts = ra_detector.inspect_ra(
-                src_ip=ipv6_src,
-                router_lifetime=getattr(ra, 'routerlifetime', 1800),
-                cur_hop_limit=getattr(ra, 'chlim', 64),
-                managed_flag=getattr(ra, 'M', 0),
-                other_flag=getattr(ra, 'O', 0),
-                advertised_prefixes=prefixes,
-                pseudonym=pseudonym_mgr.lookup_pseudonym_by_addr("default", ipv6_src, now_epoch),
-                current_time=now_epoch,
-                vlan_id=vlan_id
-            )
-
-            for alert in ra_alerts:
+            # Infrastructure Router Gateway Check (Port 1 / r1)
+            is_router = ra_detector.is_authorized_router_vlan(vlan_id) or (ipv6_src in ra_detector.authorized_routers) or (ipv6_src == "fd00:abcd::1")
+            if is_router:
                 with db_lock:
-                    recent_security_alerts.insert(0, (ts, alert))
-                    if len(recent_security_alerts) > 5: recent_security_alerts.pop()
-                    event = (ts, "[ROGUE RA]", C_RED, f"{alert.alert_type}: {alert.description}")
-                    latest_events.insert(0, event)
-                    if len(latest_events) > 5: latest_events.pop()
-                telemetry.emit("alert", alert.to_dict())
+                    router_record["pkts"] += 1
+                    router_record["last_seen"] = ts
+                    router_record["last_seen_ts"] = now_epoch
+                    if ipv6_src not in router_record["ip_history"]:
+                        router_record["ip_history"].append(ipv6_src)
+                    ra_detector.authorized_routers.add(ipv6_src)
 
-        # 3. NDP Abuse Inspection (NS/NA)
-        if ICMPv6ND_NS in packet or ICMPv6ND_NA in packet:
-            ndp_type = "NS" if ICMPv6ND_NS in packet else "NA"
-            tgt = packet[ICMPv6ND_NS].tgt if ICMPv6ND_NS in packet else (packet[ICMPv6ND_NA].tgt if ICMPv6ND_NA in packet else None)
-            p = pseudonym_mgr.lookup_pseudonym_by_addr("default", ipv6_src, now_epoch)
-            if p:
-                ndp_alerts = ndp_detector.record_ndp_packet(
-                    pseudonym=p,
-                    ndp_type=ndp_type,
+                # Router Advertisements from the authorized router port (inspect protocol baseline)
+                if ICMPv6ND_RA in packet:
+                    ra = packet[ICMPv6ND_RA]
+                    prefixes = []
+                    if ICMPv6NDOptPrefixInfo in packet:
+                        for opt in packet.getlayer(ICMPv6NDOptPrefixInfo):
+                            prefixes.append((getattr(opt, 'prefix', ''), getattr(opt, 'prefixlen', 64)))
+                    ra_alerts = ra_detector.inspect_ra(
+                        src_ip=ipv6_src,
+                        router_lifetime=getattr(ra, 'routerlifetime', 1800),
+                        cur_hop_limit=getattr(ra, 'chlim', 64),
+                        managed_flag=getattr(ra, 'M', 0),
+                        other_flag=getattr(ra, 'O', 0),
+                        advertised_prefixes=prefixes,
+                        pseudonym=None,
+                        current_time=now_epoch,
+                        vlan_id=vlan_id
+                    )
+                    for alert in ra_alerts:
+                        with db_lock:
+                            recent_security_alerts.insert(0, (ts, alert))
+                            if len(recent_security_alerts) > 10: recent_security_alerts.pop()
+                            event = (ts, "[ROUTER RA]", C_YEL, f"{alert.alert_type}: {alert.description}")
+                            latest_events.insert(0, event)
+                            if len(latest_events) > 5: latest_events.pop()
+                        telemetry.emit("alert", alert.to_dict())
+                # All router traffic (neighbor discovery queries, router forwards) is standard
+                # infrastructure routing and MUST NEVER be evaluated as a client IoT session or NDP attack.
+                return
+
+            # --- IoT CLIENT TRAFFIC INSPECTION (PORTS >= 3, PORT 8, ETC.) ---
+
+            # 1. Attribution Engine: inspect mirrored Dot1Q frame and DAD NS (drops MACs at ingress)
+            attr_event = attribution_engine.process_raw_scapy_packet(packet, current_time=now_epoch)
+            if attr_event and attr_event.event_type == "BIND_DAD":
+                with db_lock:
+                    sid = attr_event.session_id
+                    target_ip = attr_event.target_addr
+                    p = attr_event.pseudonym
+                    if sid and sid != "SES-PORT01":
+                        if sid not in session_records:
+                            session_records[sid] = {
+                                "role": "IoT Device",
+                                "status": "AUTHENTICATED",
+                                "session_id": sid,
+                                "pseudonym": p,
+                                "active_ip": target_ip,
+                                "ip_history": [target_ip],
+                                "pkts": 1,
+                                "rotations": 0,
+                                "first_seen": ts,
+                                "first_seen_ts": now_epoch,
+                                "last_seen": ts,
+                                "last_seen_ts": now_epoch,
+                                "is_rogue": False
+                            }
+                        else:
+                            rec = session_records[sid]
+                            if target_ip not in rec["ip_history"]:
+                                rec["ip_history"].append(target_ip)
+                                rec["active_ip"] = target_ip
+                                rec["rotations"] += 1
+                                rec["pseudonym"] = p
+                                if not rec.get("is_rogue"):
+                                    rec["status"] = "AUTHENTICATED"
+                        ip_to_session[target_ip] = sid
+                        if target_ip in unauthenticated_devices:
+                            del unauthenticated_devices[target_ip]
+                        event = (ts, "[BIND DAD]", C_GREEN, f"DAD bound {target_ip} -> {p} ({sid})")
+                        latest_events.insert(0, event)
+                        if len(latest_events) > 5: latest_events.pop()
+                        telemetry.emit("bind", attr_event.to_dict())
+
+            # 2. Rogue RA Inspection (from client access ports)
+            if ICMPv6ND_RA in packet:
+                ra = packet[ICMPv6ND_RA]
+                prefixes = []
+                if ICMPv6NDOptPrefixInfo in packet:
+                    for opt in packet.getlayer(ICMPv6NDOptPrefixInfo):
+                        prefixes.append((getattr(opt, 'prefix', ''), getattr(opt, 'prefixlen', 64)))
+                vlan_id = packet[Dot1Q].vlan if Dot1Q in packet else None
+                ra_alerts = ra_detector.inspect_ra(
                     src_ip=ipv6_src,
-                    target_ip=tgt,
-                    current_time=now_epoch
+                    router_lifetime=getattr(ra, 'routerlifetime', 1800),
+                    cur_hop_limit=getattr(ra, 'chlim', 64),
+                    managed_flag=getattr(ra, 'M', 0),
+                    other_flag=getattr(ra, 'O', 0),
+                    advertised_prefixes=prefixes,
+                    pseudonym=pseudonym_mgr.lookup_pseudonym_by_addr("default", ipv6_src, now_epoch),
+                    current_time=now_epoch,
+                    vlan_id=vlan_id
                 )
-                for alert in ndp_alerts:
+
+                for alert in ra_alerts:
+                    sid = attribution_engine._get_session_id_for_vlan(vlan_id) if vlan_id is not None else None
+                    if not sid and ipv6_src in ip_to_session:
+                        sid = ip_to_session[ipv6_src]
                     with db_lock:
+                        if sid and sid != "SES-PORT01":
+                            p = pseudonym_mgr.get_or_create_session_pseudonym("default", sid, now_epoch)
+                            if sid not in session_records:
+                                session_records[sid] = {
+                                    "role": "Rogue Attacker",
+                                    "status": "ROGUE ATTACKER",
+                                    "session_id": sid,
+                                    "pseudonym": p,
+                                    "active_ip": ipv6_src,
+                                    "ip_history": [ipv6_src],
+                                    "pkts": 1,
+                                    "rotations": 0,
+                                    "first_seen": ts,
+                                    "first_seen_ts": now_epoch,
+                                    "last_seen": ts,
+                                    "last_seen_ts": now_epoch,
+                                    "is_rogue": True
+                                }
+                            else:
+                                session_records[sid]["status"] = "ROGUE ATTACKER"
+                                session_records[sid]["role"] = "Rogue Attacker"
+                                session_records[sid]["is_rogue"] = True
+                                if ipv6_src not in session_records[sid]["ip_history"]:
+                                    session_records[sid]["ip_history"].append(ipv6_src)
+                            alert.pseudonym = p
+                            if alert.evidence:
+                                alert.evidence["session_id"] = sid
+                            ip_to_session[ipv6_src] = sid
+                            if ipv6_src in unauthenticated_devices:
+                                del unauthenticated_devices[ipv6_src]
+
                         recent_security_alerts.insert(0, (ts, alert))
-                        if len(recent_security_alerts) > 5: recent_security_alerts.pop()
-                        event = (ts, "[NDP ABUSE]", C_RED, f"{alert.alert_type}: {alert.description}")
+                        if len(recent_security_alerts) > 10: recent_security_alerts.pop()
+                        event = (ts, "[ROGUE RA]", C_RED, f"{alert.alert_type}: {alert.description}")
                         latest_events.insert(0, event)
                         if len(latest_events) > 5: latest_events.pop()
                     telemetry.emit("alert", alert.to_dict())
 
+            # 3. NDP Abuse Inspection (NS/NA)
+            if ICMPv6ND_NS in packet or ICMPv6ND_NA in packet:
+                ndp_type = "NS" if ICMPv6ND_NS in packet else "NA"
+                tgt = packet[ICMPv6ND_NS].tgt if ICMPv6ND_NS in packet else (packet[ICMPv6ND_NA].tgt if ICMPv6ND_NA in packet else None)
+                p = pseudonym_mgr.lookup_pseudonym_by_addr("default", ipv6_src, now_epoch)
+                if not p and vlan_id is not None:
+                    sid_tmp = attribution_engine._get_session_id_for_vlan(vlan_id)
+                    if sid_tmp and sid_tmp != "SES-PORT01":
+                        p = pseudonym_mgr.get_or_create_session_pseudonym("default", sid_tmp, now_epoch)
+                if p:
+                    ndp_alerts = ndp_detector.record_ndp_packet(
+                        pseudonym=p,
+                        ndp_type=ndp_type,
+                        src_ip=ipv6_src,
+                        target_ip=tgt,
+                        current_time=now_epoch
+                    )
+                    for alert in ndp_alerts:
+                        with db_lock:
+                            sid = ip_to_session.get(ipv6_src) or (attribution_engine._get_session_id_for_vlan(vlan_id) if vlan_id is not None else None)
+                            if sid and sid != "SES-PORT01":
+                                if sid not in session_records:
+                                    session_records[sid] = {
+                                        "role": "Rogue Attacker",
+                                        "status": "ROGUE ATTACKER",
+                                        "session_id": sid,
+                                        "pseudonym": p,
+                                        "active_ip": ipv6_src,
+                                        "ip_history": [ipv6_src],
+                                        "pkts": 1,
+                                        "rotations": 0,
+                                        "first_seen": ts,
+                                        "first_seen_ts": now_epoch,
+                                        "last_seen": ts,
+                                        "last_seen_ts": now_epoch,
+                                        "is_rogue": True
+                                    }
+                                else:
+                                    session_records[sid]["status"] = "ROGUE ATTACKER"
+                                    session_records[sid]["role"] = "Attacker (NDP Flood)"
+                                    session_records[sid]["is_rogue"] = True
+                                if alert.evidence:
+                                    alert.evidence["session_id"] = sid
+                            recent_security_alerts.insert(0, (ts, alert))
+                            if len(recent_security_alerts) > 10: recent_security_alerts.pop()
+                            event = (ts, "[NDP ABUSE]", C_RED, f"{alert.alert_type}: {alert.description}")
+                            latest_events.insert(0, event)
+                            if len(latest_events) > 5: latest_events.pop()
+                        telemetry.emit("alert", alert.to_dict())
+
         with db_lock:
-            # Check if traffic originates from the Router (r1)
-            if ipv6_src == "fd00:abcd::1":
-                router_record["pkts"] += 1
-                router_record["last_seen"] = ts
-                router_record["last_seen_ts"] = now_epoch
-                return
 
             # Check if traffic originates from an Authenticated IoT Session
             if ipv6_src in ip_to_session:
@@ -251,7 +355,7 @@ def process_packet(packet):
                     rec["pkts"] += 1
                     rec["last_seen"] = ts
                     rec["last_seen_ts"] = now_epoch
-                    if rec["status"] in ("STALE (TIMEOUT)", "STALE"):
+                    if rec["status"] in ("STALE (TIMEOUT)", "STALE") and not rec.get("is_rogue"):
                         rec["status"] = "AUTHENTICATED"
                 return
 
@@ -280,6 +384,13 @@ def process_packet(packet):
                 unrec["pkts"] += 1
                 unrec["last_seen"] = ts
                 unrec["last_seen_ts"] = now_epoch
+    except Exception as e:
+        try:
+            import traceback
+            with open("/tmp/monitor_error.log", "a") as errf:
+                errf.write(f"[{datetime.datetime.now()}] process_packet error: {e}\n{traceback.format_exc()}\n")
+        except Exception:
+            pass
 
 
 
@@ -326,6 +437,8 @@ def display_dashboard():
         with db_lock:
             # 1. Update session activity state (ACTIVE vs IDLE)
             for sid, rec in session_records.items():
+                if rec.get("is_rogue") or "ROGUE" in rec.get("status", "") or "ATTACK" in rec.get("status", ""):
+                    continue
                 last_seen_epoch = rec.get("last_seen_ts", now)
                 silence = now - last_seen_epoch
                 if rec["status"] in ("AUTHENTICATED", "ACTIVE", "IDLE"):
@@ -351,6 +464,7 @@ def display_dashboard():
             auth_sessions = [dict(v) for v in session_records.values()]
             unauth_nodes  = [dict(v) for v in unauthenticated_devices.values()]
             events_copy   = list(latest_events)
+            sec_alerts_copy = list(recent_security_alerts)
             rot_total     = total_rotations
             raw_pkts      = total_sniffed_raw
 
@@ -359,6 +473,36 @@ def display_dashboard():
         auth_count = sum(1 for d in auth_sessions if d.get("status") == "AUTHENTICATED")
         failed_count = sum(1 for d in all_devices if "FAILED" in d.get("status", ""))
         unauth_count = sum(1 for d in unauth_nodes if "UNAUTH" in d.get("status", ""))
+
+        # Export live state snapshot for frontend web dashboard
+        try:
+            snapshot_dict = {
+                "ts": now,
+                "uptime": uptime_str,
+                "epoch_length": getattr(pseudonym_mgr, "epoch_length", 300.0),
+                "epoch_remaining": max(0.0, getattr(pseudonym_mgr, "epoch_length", 300.0) - (now - getattr(pseudonym_mgr, "_epoch_start_time", now))),
+                "total_sniffed_raw": raw_pkts,
+                "total_rotations": rot_total,
+                "total_devices": total_devs,
+                "auth_count": auth_count,
+                "failed_count": failed_count,
+                "unauth_count": unauth_count,
+                "mode_b_enabled": ENABLE_MODE_B,
+                "router": router_copy,
+                "sessions": auth_sessions,
+                "unauthenticated": unauth_nodes,
+                "alerts": [alert.to_dict() if hasattr(alert, 'to_dict') else {"alert_type": "UNKNOWN", "description": str(alert)} for _, alert in sec_alerts_copy[:20]],
+                "events": [{"time": t, "badge": b, "msg": m} for t, b, _, m in events_copy[:15]]
+            }
+            snap_json = json.dumps(snapshot_dict)
+            with open("/tmp/ps007_state.json.tmp", "w") as sf:
+                sf.write(snap_json)
+            os.replace("/tmp/ps007_state.json.tmp", "/tmp/ps007_state.json")
+            with open("state_snapshot.json.tmp", "w") as sf:
+                sf.write(snap_json)
+            os.replace("state_snapshot.json.tmp", "state_snapshot.json")
+        except Exception:
+            pass
 
         # --- 1. TNP ASCII HEADER (100% UNIVERSAL ASCII) ---
         b1 = C_CYAN + r"  _______ _   _ _____  " + C_RESET
@@ -417,11 +561,11 @@ def display_dashboard():
                 c_s  = C_MAG
                 c_i  = C_CYAN
                 c_p  = C_BOLD
-            elif "FAILED" in st or "REJECT" in st:
+            elif "FAILED" in st or "REJECT" in st or "ROGUE" in st or "ATTACK" in st:
                 c_st = C_RED + C_BOLD
-                c_s  = C_RED
+                c_s  = C_RED + C_BOLD
                 c_i  = C_RED
-                c_p  = C_DIM
+                c_p  = C_BOLD
             elif "TIMEOUT" in st or "STALE" in st:
                 c_st = C_YEL + C_BOLD
                 c_s  = C_YEL

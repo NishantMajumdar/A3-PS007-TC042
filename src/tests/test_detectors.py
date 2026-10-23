@@ -75,6 +75,21 @@ class TestDetectors(unittest.TestCase):
         types = [a.alert_type for a in alerts]
         self.assertIn("ROGUE_RA_UNAUTHORIZED_SOURCE", types)
 
+    def test_rogue_ra_arbitrary_port_rejected(self):
+        # Host on an arbitrary port like port 8 (wire VLAN 12, or 4108) attempts to send RA
+        for test_vlan in [12, 4108, 20, 100]:
+            alerts = self.ra_detector.inspect_ra(
+                src_ip="fe80::dead:beef",
+                router_lifetime=1800,
+                cur_hop_limit=64,
+                managed_flag=0,
+                other_flag=0,
+                advertised_prefixes=[("fd00:abcd::", 64)],
+                vlan_id=test_vlan
+            )
+            types = [a.alert_type for a in alerts]
+            self.assertIn("ROGUE_RA_UNAUTHORIZED_SOURCE", types, f"Failed to reject rogue RA on VLAN {test_vlan}")
+
     def test_rogue_ra_lifetime_zero_dos(self):
         alerts = self.ra_detector.inspect_ra(
             src_ip="fd00:abcd::1",
