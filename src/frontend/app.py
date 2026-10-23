@@ -21,7 +21,7 @@ for user_site in [
     if os.path.exists(user_site) and user_site not in sys.path:
         sys.path.insert(0, user_site)
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, Response
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -101,6 +101,40 @@ def get_state():
         "status": "ok",
         "data": state
     })
+
+
+@app.route("/api/stream")
+def sse_stream():
+    """Server-Sent Events fallback for real-time telemetry streaming."""
+    def event_stream():
+        yield "data: {\"type\": \"connected\"}\n\n"
+        events_path = find_events_file()
+        last_pos = 0
+        if os.path.exists(events_path):
+            try:
+                last_pos = os.path.getsize(events_path)
+            except Exception:
+                pass
+        while True:
+            time.sleep(1.0)
+            if os.path.exists(events_path):
+                try:
+                    curr_size = os.path.getsize(events_path)
+                    if curr_size > last_pos:
+                        with open(events_path, "r", encoding="utf-8") as f:
+                            f.seek(last_pos)
+                            new_lines = f.readlines()
+                            last_pos = f.tell()
+                            for line in new_lines:
+                                line = line.strip()
+                                if line:
+                                    yield f"data: {line}\n\n"
+                    elif curr_size < last_pos:
+                        last_pos = 0
+                except Exception:
+                    pass
+            yield "data: {\"type\": \"heartbeat\"}\n\n"
+    return Response(event_stream(), mimetype="text/event-stream")
 
 
 @app.route("/api/history")

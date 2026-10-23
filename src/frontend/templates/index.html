@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PS-007 IPv6 IoT Security Monitor (RFC 8981)</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+
+  <div class="app-container">
+
+    <!-- ==============================================================================
+         1. TOP NAVBAR
+         ============================================================================== -->
+    <header class="top-navbar">
+      <div class="brand-section">
+        <span class="brand-logo">PS-007</span>
+        <span class="brand-title">IPv6 IoT Security Monitor</span>
+        <span class="brand-subtitle">RFC 8981 Privacy Tracking & RFC 6105 RA-Guard</span>
+      </div>
+
+      <div class="navbar-status">
+        <div class="status-item">
+          <span style="color: #c4c7d7; font-size: 11px;">SYSTEM:</span>
+          <span class="badge badge-accent">MODE A (ZERO-MAC)</span>
+        </div>
+        <div class="status-item">
+          <span class="status-dot" id="wsStatusDot"></span>
+          <span id="wsStatusText" style="font-weight: 700; color: #a5d6a7;">STREAM: LIVE</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ==============================================================================
+         2. MAIN LAYOUT: SIDEBAR + CONTENT
+         ============================================================================== -->
+    <div class="main-layout">
+
+      <!-- SIDEBAR WITH EXACT 5 ENTRIES -->
+      <aside class="sidebar">
+        <div class="sidebar-heading">Navigation</div>
+        <ul class="sidebar-nav">
+          <li class="active" data-view="view-clients">
+            <a href="#view-clients">
+              <span>1- list clients</span>
+              <span class="badge-counter" id="sidebarClientCount">0</span>
+            </a>
+          </li>
+          <li data-view="view-map">
+            <a href="#view-map">
+              <span>2- network map</span>
+            </a>
+          </li>
+          <li data-view="view-attacks">
+            <a href="#view-attacks">
+              <span>3- attack logs</span>
+              <span class="badge-counter badge-alert" id="sidebarAttackCount">0</span>
+            </a>
+          </li>
+          <li data-view="view-logs">
+            <a href="#view-logs">
+              <span>4- live logs</span>
+            </a>
+          </li>
+          <li data-view="view-rotations">
+            <a href="#view-rotations">
+              <span>5- ip rotation history</span>
+              <span class="badge-counter" id="sidebarRotCount">0x</span>
+            </a>
+          </li>
+        </ul>
+
+        <!-- Sidebar Telemetry Footer -->
+        <div class="sidebar-footer">
+          <div class="telemetry-row">
+            <span class="telemetry-label">Uptime:</span>
+            <span class="telemetry-val" id="uptimeVal">00:00:00</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Packets Sniffed:</span>
+            <span class="telemetry-val" id="totalPktsVal">0</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Rotations Total:</span>
+            <span class="telemetry-val" id="totalRotVal">0x</span>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-label">Monitored Nodes:</span>
+            <span class="telemetry-val" id="deviceCounts">1</span>
+          </div>
+          <div class="telemetry-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed #d0d4dc;">
+            <span class="telemetry-label">Epoch K_epoch:</span>
+            <span class="telemetry-val" id="epochTimerText" style="color: var(--accent);">300s rem</span>
+          </div>
+          <div style="width: 100%; height: 4px; background: #e0e2e8; margin-top: 4px;">
+            <div id="epochProgressBar" style="width: 100%; height: 100%; background: var(--accent);"></div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- ==============================================================================
+           3. MAIN CONTENT WORKSPACE (EACH PAGE DOES EXACTLY THAT)
+           ============================================================================== -->
+      <main class="content-area">
+
+        <!-- ==========================================================================
+             PAGE 1: LIST CLIENTS
+             ========================================================================== -->
+        <section id="view-clients" class="page-view active">
+          
+          <div class="info-notice">
+            <strong>1. List Monitored Clients:</strong> Monitored IoT fleet mapped via RFC 4862 SLAAC Duplicate Address Detection (DAD) and tracked via RFC 8981 Ephemeral HMAC Pseudonyms. Zero MAC addresses are read or stored.
+          </div>
+
+          <div class="stats-bar">
+            <div class="stat-box">
+              <span class="stat-box-label">Total Monitored Nodes</span>
+              <span class="stat-box-val" id="statTotalNodes">1</span>
+            </div>
+            <div class="stat-box stat-success">
+              <span class="stat-box-label">Active / Authenticated</span>
+              <span class="stat-box-val" id="statAuthNodes">0</span>
+            </div>
+            <div class="stat-box stat-danger">
+              <span class="stat-box-label">Rogue Attackers</span>
+              <span class="stat-box-val" id="statRogueNodes">0</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-label">Address Rotations</span>
+              <span class="stat-box-val" id="statTotalRots">0x</span>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">Active Monitored Device Registry</span>
+              <button class="btn btn-sm" id="btnRefreshClients">Refresh Data</button>
+            </div>
+            <div class="table-responsive">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Pseudonym (P)</th>
+                    <th>Active SLAAC IPv6 Address</th>
+                    <th>Rotations</th>
+                    <th>Packets</th>
+                    <th>Link Anchor / Port</th>
+                  </tr>
+                </thead>
+                <tbody id="devicesTableBody">
+                  <tr>
+                    <td colspan="7" style="text-align: center; color: var(--text-dim); padding: 20px;">
+                      Connecting to monitor telemetry...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==========================================================================
+             PAGE 2: NETWORK MAP
+             ========================================================================== -->
+        <section id="view-map" class="page-view">
+
+          <div class="info-notice">
+            <strong>2. Network Map:</strong> Real-time topology rendered from switch port mirror anchors. Displays ephemeral pseudonyms (identified via DAD). Offending devices turn red upon rogue attack detection.
+          </div>
+
+          <div class="panel" style="margin-bottom: 0;">
+            <div class="map-toolbar">
+              <div class="map-legend">
+                <span class="legend-item">
+                  <span class="legend-box" style="background-color: #2d2f4d; border-color: #1a1b2d;"></span>
+                  <span>Gateway (Port 1 / r1)</span>
+                </span>
+                <span class="legend-item">
+                  <span class="legend-box" style="background-color: #555963; border-color: #333333;"></span>
+                  <span>Switch (s1)</span>
+                </span>
+                <span class="legend-item">
+                  <span class="legend-box" style="background-color: #0b7285; border-color: #085a6a;"></span>
+                  <span>Monitor (m1)</span>
+                </span>
+                <span class="legend-item">
+                  <span class="legend-box" style="background-color: #2e7d32; border-color: #1b5e20;"></span>
+                  <span>Client (Active Pseudonym)</span>
+                </span>
+                <span class="legend-item">
+                  <span class="legend-box" style="background-color: #c62828; border-color: #8e0000;"></span>
+                  <span style="color: #c62828; font-weight: 700;">Rogue Attacker</span>
+                </span>
+              </div>
+              <div>
+                <button class="btn btn-sm" id="btnRecenterMap">Reset Layout</button>
+              </div>
+            </div>
+
+            <div class="canvas-container">
+              <canvas id="topologyCanvas"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==========================================================================
+             PAGE 3: ATTACK LOGS
+             ========================================================================== -->
+        <section id="view-attacks" class="page-view">
+
+          <div class="info-notice">
+            <strong>3. Attack Logs:</strong> Real-time protocol violation alerts, RFC 6105 RA-Guard violations, and RFC 4861 NDP flood / scanning detections.
+          </div>
+
+          <div class="stats-bar" style="grid-template-columns: repeat(3, 1fr);">
+            <div class="stat-box stat-danger">
+              <span class="stat-box-label">Critical Severity Alerts</span>
+              <span class="stat-box-val" id="critAlertCount">0</span>
+            </div>
+            <div class="stat-box" style="border-left: 4px solid var(--color-amber);">
+              <span class="stat-box-label">High Severity Alerts</span>
+              <span class="stat-box-val" id="highAlertCount">0</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-box-label">RFC 6105 RA-Guard Rule</span>
+              <span class="stat-box-val" style="font-size: 13px; font-weight: 700; color: var(--color-green);">PORT 1 EXCLUSIVE</span>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">Security Alert Records</span>
+              <span class="badge badge-accent">Real-Time IDS</span>
+            </div>
+            <div class="table-responsive">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Severity</th>
+                    <th>Alert Type</th>
+                    <th>Pseudonym</th>
+                    <th>Source IP</th>
+                    <th>Link Anchor</th>
+                    <th>Description & Evidence</th>
+                  </tr>
+                </thead>
+                <tbody id="attacksTableBody">
+                  <tr>
+                    <td colspan="7" style="text-align: center; color: var(--color-green); padding: 25px; font-weight: 600;">
+                      [✓] Zero security attacks detected. Network parameters nominal.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==========================================================================
+             PAGE 4: LIVE LOGS
+             ========================================================================== -->
+        <section id="view-logs" class="page-view">
+
+          <div class="info-notice">
+            <strong>4. Live Logs:</strong> Raw event stream mirrored from TNP Monitor (events.jsonl). Displays all BIND_DAD, ROTATION, ALERT, and EXPIRY events.
+          </div>
+
+          <div class="panel" style="margin-bottom: 0;">
+            <div class="log-toolbar">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                  <input type="checkbox" id="chkAutoScroll" checked> Auto-Scroll
+                </label>
+                <span style="color: var(--border);">|</span>
+                <span id="logCounterText" style="color: var(--text-dim);">Entries: 0</span>
+              </div>
+              <div>
+                <button class="btn btn-sm" id="btnClearLogs">Clear Log View</button>
+              </div>
+            </div>
+
+            <div class="log-console" id="liveLogsConsole">
+              <div class="log-entry">
+                <span class="log-time">[00:00:00]</span>
+                <span class="log-type"><span class="badge">SYSTEM</span></span>
+                <span class="log-msg">Connecting to live telemetry feed...</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==========================================================================
+             PAGE 5: IP ROTATION HISTORY
+             ========================================================================== -->
+        <section id="view-rotations" class="page-view">
+
+          <div class="info-notice">
+            <strong>5. IP Rotation History:</strong> RFC 8981 Temporary Address Privacy Extension Chains. Tracks randomized SLAAC address rotations anchored to ephemeral HMAC pseudonyms without MAC fingerprinting.
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">RFC 8981 Address Rotation Chains (Per Pseudonym)</span>
+              <span class="badge badge-purple">Forward Secrecy</span>
+            </div>
+            <div class="panel-body" id="chainsContainer" style="padding: 14px;">
+              <div style="text-align: center; color: var(--text-dim); padding: 30px;">
+                Awaiting address rotation events (RFC 8981 rotates periodically every 60s)...
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+
+    <!-- ==============================================================================
+         4. GLOBAL FOOTER
+         ============================================================================== -->
+    <footer class="app-footer">
+      <span>PS-007 IPv6 IoT Security Monitor · 2016 Enterprise Edition · RFC 8981 / RFC 4861 / RFC 6105</span>
+      <span style="font-weight: 700; color: var(--accent);">ZERO HARDWARE MAC FINGERPRINTING COMPLIANCE GUARANTEE</span>
+    </footer>
+
+  </div>
+
+  <!-- Scripts -->
+  <script src="/static/js/topology.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

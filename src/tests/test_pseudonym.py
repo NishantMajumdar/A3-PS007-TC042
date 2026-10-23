@@ -25,6 +25,12 @@ class TestPseudonymManager(unittest.TestCase):
         session2, p2 = self.mgr.get_or_create_session("tenant-A", "session-001", "vlan-4103")
         self.assertEqual(p1, p2)
 
+    def test_get_or_create_session_pseudonym_and_epoch_length(self):
+        p = self.mgr.get_or_create_session_pseudonym("tenant-A", "session-002")
+        self.assertEqual(len(p), 8)
+        self.assertTrue(all(c in "0123456789ABCDEF" for c in p))
+        self.assertEqual(self.mgr.epoch_length, 10.0)
+
     def test_cross_tenant_isolation(self):
         # Same session_id in two different tenants MUST yield different pseudonyms
         _, p_a = self.mgr.get_or_create_session("tenant-A", "shared-id", "vlan-4103")
