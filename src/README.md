@@ -253,6 +253,22 @@ flowchart TD
     L4 --> L3
     L3 --> L2
     L2 --> L1
+
+    classDef cL7 fill:#2e1065,stroke:#c084fc,stroke-width:2px,color:#ffffff;
+    classDef cL6 fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#ffffff;
+    classDef cL5 fill:#7f1d1d,stroke:#f87171,stroke-width:2px,color:#ffffff;
+    classDef cL4 fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#ffffff;
+    classDef cL3 fill:#451a03,stroke:#fbbf24,stroke-width:2px,color:#ffffff;
+    classDef cL2 fill:#172554,stroke:#60a5fa,stroke-width:2px,color:#ffffff;
+    classDef cL1 fill:#18181b,stroke:#a1a1aa,stroke-width:2px,color:#ffffff;
+
+    class L7 cL7;
+    class L6 cL6;
+    class L5 cL5;
+    class L4 cL4;
+    class L3 cL3;
+    class L2 cL2;
+    class L1 cL1;
 ```
 
 ---
@@ -284,6 +300,18 @@ flowchart TD
     H3 <-->|"Port 5 (wire: 9)"| S1
     H4 <-->|"Port 6 (wire: 10)"| S1
     H5 <-->|"Port 7 (wire: 11)"| S1
+
+    style LAN fill:#0b1329,stroke:#38bdf8,stroke-width:2px,stroke-dasharray: 5 5,color:#38bdf8
+
+    classDef router fill:#7c2d12,stroke:#fb923c,stroke-width:2px,color:#ffffff;
+    classDef switch fill:#1e3a8a,stroke:#38bdf8,stroke-width:3px,color:#ffffff;
+    classDef monitor fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#ffffff;
+    classDef client fill:#1e293b,stroke:#a78bfa,stroke-width:2px,color:#ffffff;
+
+    class R1 router;
+    class S1 switch;
+    class M1 monitor;
+    class H1,H2,H3,H4,H5 client;
 ```
 
 ### 5.2 Zero-MAC Packet Ingress & Attribution Pipeline
@@ -315,6 +343,32 @@ flowchart TD
     
     Ws --> Dashboard["SOC Web Dashboard (Flask / Vanilla JS)"]
     Snapshot --> Dashboard
+
+    classDef cClient fill:#1e293b,stroke:#a78bfa,stroke-width:2px,color:#ffffff;
+    classDef cSwitch fill:#1e3a8a,stroke:#38bdf8,stroke-width:2px,color:#ffffff;
+    classDef cGateway fill:#7c2d12,stroke:#fb923c,stroke-width:2px,color:#ffffff;
+    classDef cMonitor fill:#0c4a6e,stroke:#38bdf8,stroke-width:2px,color:#ffffff;
+    classDef cMacDrop fill:#881337,stroke:#f43f5e,stroke-width:3px,color:#ffffff;
+    classDef cPort fill:#451a03,stroke:#fbbf24,stroke-width:2px,color:#ffffff;
+    classDef cPseudo fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#ffffff;
+    classDef cDetectors fill:#713f12,stroke:#facc15,stroke-width:2px,color:#ffffff;
+    classDef cAlert fill:#7f1d1d,stroke:#f87171,stroke-width:2px,color:#ffffff;
+    classDef cTelem fill:#3b0764,stroke:#c084fc,stroke-width:2px,color:#ffffff;
+    classDef cOut fill:#0f172a,stroke:#60a5fa,stroke-width:2px,color:#ffffff;
+    classDef cDash fill:#134e4a,stroke:#2dd4bf,stroke-width:2px,color:#ffffff;
+
+    class Client cClient;
+    class Switch cSwitch;
+    class Gateway cGateway;
+    class MonitorIntf cMonitor;
+    class MacDrop cMacDrop;
+    class PortExtract cPort;
+    class PseudoGen cPseudo;
+    class Detectors cDetectors;
+    class RAGuard,NDPGuard cAlert;
+    class Telemetry cTelem;
+    class Jsonl,Ws,Snapshot cOut;
+    class Dashboard cDash;
 ```
 
 ---
@@ -388,6 +442,20 @@ flowchart LR
 
     Epoch1 --> Rotation
     Rotation --> Epoch2
+
+    style Epoch1 fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#38bdf8
+    style Rotation fill:#3b0764,stroke:#f43f5e,stroke-width:2px,stroke-dasharray: 4 4,color:#f43f5e
+    style Epoch2 fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#38bdf8
+
+    classDef cKey fill:#78350f,stroke:#fbbf24,stroke-width:2px,color:#ffffff;
+    classDef cPseudo fill:#064e3b,stroke:#34d399,stroke-width:2px,color:#ffffff;
+    classDef cWipe fill:#7f1d1d,stroke:#f87171,stroke-width:2px,color:#ffffff;
+    classDef cFresh fill:#0c4a6e,stroke:#22d3ee,stroke-width:2px,color:#ffffff;
+
+    class K1,K2 cKey;
+    class P1,P2 cPseudo;
+    class Wipe cWipe;
+    class Fresh cFresh;
 ```
 
 - **Lifecycle & TTL Stores:**
