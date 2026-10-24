@@ -1,286 +1,532 @@
 # PS-007: IPv6 IoT Security Monitoring System
+### Privacy-Aware Ephemeral Attribution, RFC 8981 Rotation Tracking, and Anomaly Detection
 
 > **TNP Cybersecurity Research Labs**  
-> *RFC 8981 Rotation-Resistant IoT Tracking & Security Anomaly Detection*  
-> **Strict Constraint:** Zero Hardware MAC Fingerprinting (`Ether.src` dropped at ingress).
+> **Strict Operational Constraint:** Zero Hardware MAC Fingerprinting (`Ether.src` stripped at ingress).  
+> **Primary Philosophy:** Passive Black-Box IoT Tracking (Mode A) with Zero Client Software Dependencies.
+
+---
+
+## Table of Contents
+1. [Executive Summary & Problem Statement](#1-executive-summary--problem-statement)
+2. [Full Setup Guide to Running on Your System](#2-full-setup-guide-to-running-on-your-system)
+3. [Compliance Verification: The 8 Core Requirements](#3-compliance-verification-the-8-core-requirements)
+4. [Full Technology Stack (7 Layers)](#4-full-technology-stack-7-layers)
+5. [System Architecture & Ingress Pipeline](#5-system-architecture--ingress-pipeline)
+6. [Core Engine Modules in Detail](#6-core-engine-modules-in-detail)
+   - [6.1 `ps007_topology.py` - Mininet & OpenFlow 1.3 Tagging](#61-ps007_topologypy---mininet--openflow-13-tagging)
+   - [6.2 `attribution.py` - Zero-MAC Attribution & DAD Binding](#62-attributionpy---zero-mac-attribution--dad-binding)
+   - [6.3 `pseudonym.py` - Epoch-Keyed Pseudonyms & Forward Secrecy](#63-pseudonympy---epoch-keyed-pseudonyms--forward-secrecy)
+   - [6.4 `detectors.py` - RA-Guard & Multi-Layer NDP Abuse Engine](#64-detectorspy---ra-guard--multi-layer-ndp-abuse-engine)
+   - [6.5 `optional_mode_b/ratchet.py` - Active Cryptographic Ratchet](#65-optional_mode_bratchetpy---active-cryptographic-ratchet)
+   - [6.6 `telemetry.py` - Native RFC 6455 WebSocket & Streaming](#66-telemetrypy---native-rfc-6455-websocket--streaming)
+   - [6.7 `frontend/` - 2016-Era Enterprise Web SOC Dashboard](#67-frontend---2016-era-enterprise-web-soc-dashboard)
+7. [Adversary Models & Attack Scenarios](#7-adversary-models--attack-scenarios)
+8. [REST API & Telemetry Event Schema](#8-rest-api--telemetry-event-schema)
+9. [Zero-MAC Compliance Verification Command](#9-zero-mac-compliance-verification-command)
 
 ---
 
 ## 1. Executive Summary & Problem Statement
 
-Internet of Things (IoT) devices deployed in modern IPv6 subnets utilize **RFC 8981 (Privacy Extensions for SLAAC)** to prevent tracking by frequently generating pseudo-random interface identifiers (IIDs) and rotating their global IPv6 addresses (e.g., every 60 seconds).
+Internet of Things (IoT) endpoints deployed in modern IPv6 subnets utilize **RFC 8981 (Privacy Extensions for SLAAC)** to prevent tracking by third-party observers. Endpoints periodically randomize their interface identifiers (IIDs) and rotate their global unicast IPv6 addresses (e.g., every 60 seconds).
 
-In traditional network monitoring, operators rely on Layer 2 MAC addresses (`Ether.src`) to link rotating IP addresses back to physical hosts. However, in zero-trust, privacy-preserving, or virtualized environments, **hardware MAC fingerprinting is strictly prohibited**. 
+In conventional Network Intrusion Detection Systems (NIDS), operators track rotating addresses by binding them back to Layer 2 Ethernet MAC addresses (`Ether.src`). However, in zero-trust, privacy-preserving, or multi-tenant subnets, **hardware MAC fingerprinting is strictly forbidden** due to surveillance risks, device profiling, and regulatory requirements.
 
-The **PS-007** system solves this challenge:
-1. **Zero Hardware Fingerprinting**: The monitor immediately drops all Layer 2 MAC addresses at ingress and never reads or stores `Ether.src`.
-2. **Ephemeral Epoch-Keyed Pseudonyms**: Translates physical link anchors into unlinkable, rotating pseudonyms:
-   $$P = \text{HMAC}(K_{\text{epoch}}, \text{tenant} \parallel \text{session\_id})[:8]$$
-3. **Passive DAD Attribution**: Binds rotating addresses to sessions passively by sniffing Duplicate Address Detection (RFC 4862) Neighbor Solicitations with rate bounding.
-4. **Active Mode B Cryptographic Key Ratchet**: Optional active agent mode utilizing a hash ratchet $S_{i+1} = H(S_i)$ and replay-protected counters.
-5. **Robust Statistical Defense**: Replaces flawed Median Absolute Deviation (MAD) heuristics with RFC 4861 token buckets, $n$-of-$m$ hysteresis, CUSUM drift detection, and distinct-target cardinality tracking.
+Furthermore, attackers exploit RFC 8981 address rotation by generating **rotating-source Neighbor Discovery Protocol (NDP) floods**, which completely blind legacy per-IP rate limiters.
 
----
-
-## 2. Architecture & System Design
-
-```
-+-----------------------------------------------------------------------------------+
-|                                  Mininet Topology                                 |
-|                                                                                   |
-|   +--------------+      +--------------+                 +--------------------+   |
-|   |  Host h1     |      |  Host h2-h5  |                 |  Router r1         |   |
-|   | (RFC 8981)   |      | (RFC 8981)   |                 | (radvd gateway)    |   |
-|   +-------+------+      +-------+------+                 +---------+----------+   |
-|           | port 3              | port 4..7                        | port 1       |
-|           \                     |                                 /               |
-|            \                    |                                /                |
-|       +-----------------------------------------------------------------+         |
-|       |                     Open vSwitch (s1)                           |         |
-|       |  Table 0:                                                       |         |
-|       |    - NORMAL Forwarding                                          |         |
-|       |    - Per-Port Mirror: push_vlan (4100+in_port) -> Monitor m1    |         |
-|       +--------------------------------+--------------------------------+         |
-|                                        | port 2 (Mirrored 802.1Q Copies)          |
-|                                        v                                          |
-|                          +---------------------------+                            |
-|                          |     Monitor Node (m1)     |                            |
-|                          +-------------+-------------+                            |
-+----------------------------------------|------------------------------------------+
-                                         |
-     +-----------------------------------+-----------------------------------+
-     | Ingress: Immediately STRIP & DROP Ether.src (Zero MAC Inspection)     |
-     +-----------------------------------+-----------------------------------+
-                                         |
-               +-------------------------+-------------------------+
-               |                                                   |
-               v                                                   v
-   [ Attribution Engine ]                               [ Security Detectors ]
-   - Extracts VLAN ID (4100 + port)                     - RogueRADetector:
-   - Validates RFC 4862 DAD NS:                            * Unauthorized router source
-     * src == ::                                           * Unexpected prefix / flags
-     * hlim == 255                                         * Lifetime 0 DoS variant
-     * target in fd00:abcd::/64                            * Parameter inconsistency
-   - Bounded allowance (max 3/rot)                         * High-frequency bursts
-   - Maps VLAN -> Session -> Pseudonym                  - NDPAbuseDetector:
-                                                           * RFC 4861 token buckets (NS/NA/RS)
-               |                                           * n-of-m hysteresis
-               v                                           * CUSUM change-point drift
-   [ PseudonymManager ]                                    * Target cardinality scan
-   - P = HMAC(K_epoch, tenant||sid)[:8]                 - State purged on pseudonym expiry
-   - Secret key zeroed on rotation
-   - TTL address & hard session stores
-               |
-               +-------------------------+-------------------------+
-                                         |
-                                         v
-                                [ Telemetry Stream ]
-                                - events.jsonl
-                                - RFC 6455 WebSocket (:8765)
-                                - Replay Engine
-```
+### The PS-007 Solution:
+1. **Zero Hardware MAC Fingerprinting:** All Layer 2 Ethernet source addresses are stripped and dropped immediately upon ingress. No MAC address is ever recorded in RAM, persisted to disk, or broadcast in telemetry.
+2. **Deterministic Link-Anchor Attribution:** OpenFlow 1.3 pushes an 802.1Q VLAN tag (`4100 + in_port`) on mirrored packets. The monitor derives a local session anchor (`SES-PORTxx`) directly from physical switch topology.
+3. **Epoch-Keyed Ephemeral Pseudonyms:** Anchors map to short-lived, un-linkable 8-character pseudonyms:
+   $$P = \text{HMAC-SHA256}(K_{\text{epoch}}, \; \text{tenant\_id} \parallel \text{session\_id})[0:8]$$
+4. **Passive RFC 4862 DAD Tracking (Primary Mode A):** IoT clients remain 100% black boxes running standard Linux kernel networking. Rotations are captured passively via Duplicate Address Detection Neighbor Solicitations with strict rate bounding.
+5. **Multi-Layer Protocol Anomaly Detection:** Replaces flawed Median Absolute Deviation (MAD) heuristics with RFC 4861 token buckets, $n$-of-$m$ hysteresis, CUSUM drift detection, target cardinality scanning, and RFC 6105 RA-Guard.
+6. **Utilitarian 2016-Era SOC Web Dashboard:** Clean, high-performance monitoring web dashboard running on Flask with dedicated pages for client tracking, 2D topology mapping, attack logs, live stream console, and IP rotation chains.
 
 ---
 
-## 3. Core Modules & Deliverables
+## 2. Full Setup Guide to Running on Your System
 
-### `ps007_topology.py`
-- Open vSwitch `s1` runs OpenFlow 1.3 with a default `NORMAL` flow for standard L2/L3 routing.
-- Per-port mirroring pushes an 802.1Q VLAN tag `4100 + in_port` to packets mirrored to `m1`.
-- Router `r1` broadcasts `fd00:abcd::/64` via `radvd` with 60-second preferred lifetime.
-- IoT hosts `h1`-`h5` configure Linux kernel parameters (`use_tempaddr=2`, `temp_prefered_lft=60`, `max_desync_factor=0`) to aggressively rotate IPv6 privacy addresses every 60 seconds.
-- Monitor `m1` runs `ethtool -K m1-eth0 rxvlan off` to prevent kernel offloading from stripping the 802.1Q headers before capture.
+Follow this step-by-step walkthrough to install dependencies, initialize the network emulation, start the monitoring engine, and operate the SOC dashboard.
 
-### `pseudonym.py`
-- **Epoch-Keyed Pseudonyms**: Generates 8-character hex pseudonyms $P = \text{HMAC}(K_{\text{epoch}}, \text{tenant} \parallel \text{session\_id})[:8]$.
-- **Cryptographic Memory Erasure**: Stores $K_{\text{epoch}}$ as a mutable `bytearray` and zeroes out previous secret keys in memory upon epoch rotation:
-  ```python
-  for i in range(len(self._k_epoch)):
-      self._k_epoch[i] = 0
-  ```
-- **Multi-Tenant Segregation**: Completely isolates address bindings and session state per tenant.
-- **TTL Enforcement**: Enforces configurable address TTLs and hard session TTLs. Address lookups immediately fail after expiry, and `purge()` performs eager and background cleanup.
+### 2.1 System Prerequisites
+* **Operating System:** Linux (Arch/derivative recommended+tested).
+* **Kernel:** Standard Linux kernel with IPv6 enabled.
+* **Privileges:** `sudo` / root permissions (required by Mininet for network namespace isolation and Open vSwitch flow configuration).
 
-### `attribution.py`
-- **Ingress MAC Stripping**: Drops Layer 2 Ethernet source addresses immediately upon packet reception.
-- **RFC 4862 DAD Verification**: Inspects Duplicate Address Detection Neighbor Solicitations:
-  - Source IP must be unspecified (`::`).
-  - Hop Limit must be `255`.
-  - Target must match the expected subnet prefix (`fd00:abcd::/64`).
-- **Bounded Rotation Allowance**: Restricts address bindings to at most 3 updates per 60-second window, mitigating address-exhaustion DoS.
+### 2.2 Install Required System Packages
+Open a terminal and install the required networking utilities, switch software, and Python packages:
 
-### Primary Mode A: True Zero-Software Black-Box IoT Clients
-- **Zero Software on Endpoint**: The client runs **absolutely nothing** automatically. It is a true black box.
-- **Pure Linux Kernel Networking**: Relies 100% on native Linux kernel SLAAC (RFC 4862) and Privacy Extensions (RFC 8981).
-- **Manual Testing via Shell**: When launching a client node (`./launch_node.sh h1`), an interactive shell opens so you can manually run `ping -6 fd00:abcd::1` or any standard command.
-- **Passive Attribution**: The monitor observes the kernel's automatic DAD Neighbor Solicitations via OpenFlow port mirroring and binds rotating addresses to pseudonyms without any client software.
-
-
-### `optional_mode_b/` (Optional Active Agent & Ratchet Extension)
-- **Segregated Package**: All Mode B code is isolated into the [`optional_mode_b/`](file:///home/nishantm/Documents/network/optional_mode_b/) directory.
-- **[`optional_client_agent.py`](file:///home/nishantm/Documents/network/optional_mode_b/optional_client_agent.py)**: Active client agent for managed IoT devices.
-- **[`ratchet.py`](file:///home/nishantm/Documents/network/optional_mode_b/ratchet.py)**: Cryptographic key ratchet $S_{i+1} = \text{SHA256}(S_i)$ with monotonic replay protection.
-- **[`optional_mode_b_server.py`](file:///home/nishantm/Documents/network/optional_mode_b/optional_mode_b_server.py)**: Pluggable UDP server on port 9000 enabled only when `--enable-mode-b` is explicitly provided.
-
-
-### `detectors.py`
-- **Rogue Router Advertisement Detector (`RogueRADetector`)**:
-  - Flags unauthorized router source addresses ($\neq \text{fd00:abcd::1}$).
-  - Detects unexpected prefixes and modified M/O flags.
-  - Flags Lifetime = 0 DoS attacks (which flush default route caches).
-  - Flags hop-limit parameter inconsistencies and high-frequency bursts ($> 3$ RAs in 2s).
-- **NDP Abuse Detector (`NDPAbuseDetector`)**:
-  - Replaces raw-count Median Absolute Deviation (MAD) with mathematically rigorous RFC 4861 token buckets (NS: cap 6, refill 2.0/s; NA: cap 6, refill 2.0/s; RS: cap 4, refill 0.5/s).
-  - $n$-of-$m$ hysteresis filter to eliminate transient bursts ($3$ out of $5$ window).
-  - Cumulative Sum (CUSUM) drift detection for persistent slow-rate anomalies.
-  - Distinct-target cardinality tracking to detect horizontal network reconnaissance/scanning ($> 4$ distinct targets within 10s).
-  - Explicit `purge_expired_pseudonyms()` wipes detector memory when a pseudonym expires.
-
-### `baseline_detector.py`
-- Naive per-source-IP sliding-window rate limiter provided for empirical comparison. Demonstrates how rotating source IP addresses completely blinds legacy security tools.
-
-### `telemetry.py`
-- Writes structured JSONL event records (`bind`, `rotation`, `alert`, `expiry`).
-- Pure standard-library RFC 6455 WebSocket streaming server (zero third-party dependencies, runs on port 8765).
-- Offline replay engine supporting replay from saved JSONL log files at configurable speeds.
-
-### `attacks/`
-- `attacks/rogue_ra.py`: Scapy attack script supporting `unauthorized`, `lifetime0`, and `burst` modes.
-- `attacks/ndp_flood.py`: Scapy flood attack rotating source addresses every 2 seconds to evade per-IP limiters, with optional horizontal target scanning.
-
----
-
-## 4. Empirical Evaluation Results
-
-The evaluation harness (`eval/benchmark_harness.py`) ran $\ge 30$ independent trials per attack scenario and benign stress condition.
-
-### Detection Performance Comparison ($\ge 30$ Trials)
-
-| Scenario | Detector | TPR (Recall) | FPR | Latency p50 | Latency p95 |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **Rogue RA Attack** | Baseline | 0.00% | 0.00% | N/A | N/A |
-| **Rogue RA Attack** | **PS-007 (Ours)** | **100.00%** | **0.00%** | **100 ms** | **100 ms** |
-| **Rotating NDP Flood** | Baseline | 100.00%* | 0.00% | 1000 ms | 1000 ms |
-| **Rotating NDP Flood** | **PS-007 (Ours)** | **100.00%** | **0.00%** | **750 ms** | **750 ms** |
-| **Target Scanning Scan**| Baseline | 0.00% | 0.00% | N/A | N/A |
-| **Target Scanning Scan**| **PS-007 (Ours)** | **100.00%** | **0.00%** | **750 ms** | **750 ms** |
-| **Benign: Simultaneous Rotation** | Baseline | N/A | 0.00% | N/A | N/A |
-| **Benign: Simultaneous Rotation** | **PS-007 (Ours)** | **N/A** | **0.00%** | **N/A** | **N/A** |
-| **Benign: Device Reboot / SLAAC** | Baseline | N/A | 0.00% | N/A | N/A |
-| **Benign: Device Reboot / SLAAC** | **PS-007 (Ours)** | **N/A** | **0.00%** | **N/A** | **N/A** |
-| **Benign: Bursty Sensor Telemetry**| Baseline | N/A | 0.00% | N/A | N/A |
-| **Benign: Bursty Sensor Telemetry**| **PS-007 (Ours)** | **N/A** | **0.00%** | **N/A** | **N/A** |
-
-*\*Note: Under fast rotation sweeps, the baseline rate limiter drops to 0.0% TPR when attacker rotation interval is $\le 1.0$s.*
-
-### Rotation Interval Sweep
-
-| Rotation Interval ($s$) | Baseline TPR | PS-007 TPR | Key Observation |
-| :---: | :---: | :---: | :--- |
-| **1.0 s** | **0.0%** | **100.0%** | Baseline completely blinded by rapid rotation |
-| **2.0 s** | 100.0% | 100.0% | Baseline catches flood only at sustained rates |
-| **5.0 s** | 100.0% | 100.0% | PS-007 maintains 100% TPR across all intervals |
-| **60.0 s** | 100.0% | 100.0% | Standard RFC 8981 rotation interval |
-
-### Attack Rate vs. Latency Sweep
-
-| Attack Rate (pps) | Baseline TPR | PS-007 TPR | PS-007 Latency p50 | PS-007 Latency p95 |
-| :---: | :---: | :---: | :---: | :---: |
-| **4.0 pps** | 0.0% | **100.0%** | 3750 ms | 3750 ms |
-| **8.0 pps** | 100.0% | **100.0%** | 1250 ms | 1250 ms |
-| **16.0 pps** | 100.0% | **100.0%** | 562.5 ms | 562.5 ms |
-| **32.0 pps** | 100.0% | **100.0%** | 250.0 ms | 250.0 ms |
-| **64.0 pps** | 100.0% | **100.0%** | 125.0 ms | 125.0 ms |
-
-Generated plots saved to:
-- `eval/results/detection_comparison.png`
-- `eval/results/parameter_sweeps.png`
-
----
-
-## 5. Verification & Test Suite
-
-The test suite consists of 31 automated unit and integration tests covering privacy, attribution, ratchets, detectors, baseline comparisons, and telemetry.
-
-### Running the Test Suite
 ```bash
-python3 -m unittest discover tests -v
+sudo apt update
+sudo apt install -y \
+    mininet \
+    openvswitch-switch \
+    radvd \
+    ethtool \
+    python3 \
+    python3-pip \
+    python3-scapy \
+    python3-flask \
+    xterm
 ```
 
-### Test Breakdown
-- **`tests/test_privacy.py`**:
-  - `test_expiry_lookup_fails_and_store_clean`: Verifies eager and background purging of expired records.
-  - `test_k_epoch_wiped_in_memory`: Verifies cryptographic zeroing of the previous key array.
-  - `test_cross_tenant_isolation`: Verifies zero cross-tenant pseudonym or address leakage.
-  - `test_no_cross_epoch_linkage`: Proves pseudonyms across epochs cannot be mathematically correlated.
-- **`tests/test_pseudonym.py`**: Validates manager operations, TTL expiry, and multi-tenant stores.
-- **`tests/test_attribution.py`**: Validates DAD parsing, RFC 4862 compliance, rate bounding, and ingress MAC dropping.
-- **`tests/test_ratchet.py`**: Validates key ratchet steps, HMAC tag verification, and counter replay rejection.
-- **`tests/test_detectors.py`**: Validates Rogue RA detection (unauthorized, lifetime 0, bursts) and NDP abuse detection (token buckets, hysteresis, CUSUM, target scanning).
-- **`tests/test_baseline.py`**: Verifies baseline per-IP rate limiting behavior.
-- **`tests/test_telemetry.py`**: Verifies JSONL generation, WebSocket broadcasting, and event replay.
+OR
+
+```
+# 1. Install core networking tools, OVS, and Python packages via pacman
+sudo pacman -Syu --needed \
+    openvswitch \
+    radvd \
+    ethtool \
+    python \
+    python-pip \
+    python-scapy \
+    python-flask \
+    xterm \
+    iproute2
+
+# 2. Install Mininet from AUR (using yay or paru)
+yay -S --needed mininet
+# (Or using paru: paru -S --needed mininet)
+
+# 3. Load Open vSwitch kernel module and start services
+sudo modprobe openvswitch
+sudo systemctl enable --now ovsdb-server ovs-vswitchd
+```
+
+*(Optional: If your environment uses Python virtual environments, Scapy and Flask can also be installed via `pip install scapy flask`.)*
+
+### 2.3 Clone & Navigate to Project Directory
+```bash
+cd network/src
+```
 
 ---
 
-## 6. How to Run & Reproduce
+### 2.4 Running the System (5-Step Execution Guide)
 
-### 1. Launch Mininet Network Simulation
+#### Step 1: Start the Mininet Network Emulation
+In your **first terminal**, launch the software-defined network topology:
 ```bash
 sudo python3 ps007_topology.py
 ```
-*(Or run autonomous verification: `sudo python3 ps007_topology.py --test --duration 90`)*
+*What happens:*
+- Initializes Open vSwitch `s1` with OpenFlow 1.3 per-port mirroring flows.
+- Launches Gateway Router `r1` running `radvd` for prefix `fd00:abcd::/64`.
+- Configures Monitor `m1` and 5 IoT clients (`h1` through `h5`).
+- Enables RFC 8981 fast address rotation (60-second lifetime) on all client interfaces.
+- Saves host process namespace IDs to `/tmp/mininet_pids/`.
+- Opens an interactive Mininet CLI prompt. Keep this terminal open!
 
-### 2. Launch Monitor & IoT Clients
+*(Alternative Flags:*
+- `sudo python3 ps007_topology.py --test --duration 90`: Runs an automated 90-second test verifying address rotations without manual CLI.
+- `sudo python3 ps007_topology.py --xterm`: Automatically launches dedicated GUI terminal windows for each host.*)*
 
-#### Primary Mode A (Zero-Agent Black-Box IoT Tracking):
-In separate terminals:
+---
+
+#### Step 2: Start the Security Monitor on Node `m1`
+Open a **second terminal** and launch the core monitoring engine inside the `m1` namespace:
 ```bash
-# Terminal 1: Launch Monitor on m1 (Passive Black-Box Mode)
+cd network/src
 ./launch_node.sh m1
-
-# Terminal 2-6: Launch Black-Box IoT Clients (h1-h5)
-./launch_node.sh h1
-./launch_node.sh h2
-./launch_node.sh h3
 ```
-*Alternatively, open all nodes in separate XTerm windows: `./launch_node.sh -x all`*
-
-#### Optional Mode B (Active Cryptographic Ratchet Agent):
+Inside the `m1` namespace prompt, execute:
 ```bash
-# Terminal 1: Launch Monitor with Mode B UDP server enabled
-./launch_node.sh --mode-b m1
-
-# Terminal 2-6: Launch Active Ratchet Client Agents
-./launch_node.sh --mode-b h1
-./launch_node.sh --mode-b h2
+python3 monitor.py
 ```
+*What happens:*
+- Monitor promiscuously sniffs mirrored packets on interface `m1-eth0`.
+- Strips and drops all Layer 2 Ethernet MAC addresses at ingress.
+- Tracks RFC 4862 SLAAC Duplicate Address Detection (DAD) packets.
+- Automatically generates HMAC-SHA256 pseudonyms anchored to physical switch ports.
+- Starts the native RFC 6455 WebSocket streaming server on port `8765`.
+- Writes atomic snapshots to `state_snapshot.json` and logs to `events.jsonl`.
 
+---
 
-### 3. Launch Security Attacks
+#### Step 3: Launch the SOC Web Dashboard
+Open a **third terminal** and start the Flask web server:
 ```bash
-# Launch Rogue RA attack from h2 (lifetime-0 variant):
-./launch_node.sh h2 "python3 attacks/rogue_ra.py --mode lifetime0"
-
-# Launch rotating-source NDP flood attack from h3:
-./launch_node.sh h3 "python3 attacks/ndp_flood.py --type NS --pps 15 --rotate 2.0"
+cd network/src
+python3 frontend/app.py --host 0.0.0.0 --port 5000
 ```
+*(Or launch it from within node `m1`: `./launch_node.sh m1 "python3 frontend/app.py --host 0.0.0.0 --port 5000"`)*
 
-### 4. Run Benchmark Harness
-```bash
-python3 eval/benchmark_harness.py
+Now open your browser and navigate to:
+```
+http://localhost:5000
 ```
 
-### 5. Replay Telemetry Events
+**Explore the 5 Dedicated Sidebar Pages:**
+1. **`1- list clients`:** Live table of all monitored devices with ephemeral pseudonyms, active SLAAC addresses, rotation counts, and link anchors.
+2. **`2- network map`:** Real-time 2D HTML5 canvas visualizer showing Gateway (`r1`), Switch (`s1`), Monitor (`m1`), and active IoT client nodes.
+3. **`3- attack logs`:** Incident table displaying protocol violations, severity badges (Critical/High), link anchors, and RFC 6105 RA-Guard alerts.
+4. **`4- live logs`:** Monospace live terminal stream showing `BIND_DAD`, `ROTATION`, `ALERT`, and `EXPIRY` events with auto-scroll and refresh controls.
+5. **`5- ip rotation history`:** Per-pseudonym address rotation chains tracking each client's RFC 8981 privacy history.
+
+---
+
+#### Step 4: Generate Normal Traffic & Observe Address Rotations
+In a **fourth terminal**, generate benign IPv6 traffic from one or more client hosts:
 ```bash
-python3 telemetry.py replay events.jsonl --speed 2.0
+# Ping Gateway from Client h1
+./launch_node.sh h1 "ping -6 -c 5 fd00:abcd::1"
+
+# Ping Gateway from Client h2
+./launch_node.sh h2 "ping -6 -c 5 fd00:abcd::1"
+```
+*What happens:*
+- The clients broadcast RFC 4862 DAD Neighbor Solicitations.
+- The Attribution Engine binds each address to physical ports (`SES-PORT03`, `SES-PORT04`) and maps them to pseudonyms (e.g., `P_9A3B09E4`).
+- The clients appear automatically in the dashboard client table and on the 2D network map.
+- **Every 60 seconds**, the Linux kernel automatically rotates to a new temporary IPv6 address. The dashboard seamlessly records the new address in `5- ip rotation history` while preserving the authenticated session.
+
+---
+
+#### Step 5: Simulate Attacks & Observe Real-Time Detection
+
+##### Attack Scenario A: Rogue Router Advertisement Injection
+In a separate terminal, launch a Rogue RA attack from client `h4`:
+```bash
+./launch_node.sh h4 "python3 attacks/rogue_ra.py --mode lifetime0"
+```
+*Detection Result:*
+- The monitor immediately intercepts the unauthorized RA arriving on client access port 4.
+- `RogueRADetector` triggers `ROGUE_RA_UNAUTHORIZED_SOURCE` (Critical).
+- In the Web Dashboard:
+  - Node `h4` turns **solid crimson red** on the **`2- network map`**.
+  - Row `SES-PORT04` turns red with a `ROGUE ATTACKER` badge on **`1- list clients`**.
+  - A detailed violation record appears under **`3- attack logs`**.
+
+##### Attack Scenario B: Rotating-Source NDP Flood & Network Sweep
+In a separate terminal, launch a rotating-source Neighbor Solicitation flood from client `h3`:
+```bash
+./launch_node.sh h3 "python3 attacks/ndp_flood.py -t NS -r 15.0 --rotate-sec 2.0 --scan"
+```
+*Detection Result:*
+- The attacker randomizes their source IPv6 address every 2 seconds to evade traditional per-IP rate limiters.
+- Because all packets arrive from physical Port 3, the monitor maps every rotating IP to the **same pseudonym $P$**.
+- `NDPAbuseDetector` token buckets are exhausted, triggering `NDP_RATE_ABUSE_HYSTERESIS` and `NDP_SCAN_CARDINALITY_ALERT` in under 750 milliseconds.
+
+---
+
+### 2.5 Troubleshooting & Common Operations
+
+| Issue | Cause | Solution |
+| :--- | :--- | :--- |
+| **`Cannot bind port 5000`** | Another process is using port 5000. | Run on another port: `python3 frontend/app.py --port 5050`. |
+| **`Mininet fails with "File exists"`** | A previous Mininet session was interrupted. | Clean up with `sudo mn -c` and restart. |
+| **`radvd fails to start`** | Stale PID file exists in `/tmp/radvd.pid`. | Run: `sudo kill -9 $(cat /tmp/radvd.pid 2>/dev/null); sudo rm -f /tmp/radvd.pid`. |
+| **`m1 not capturing VLAN tags`** | Kernel NIC offloading is stripping 802.1Q tags. | Run inside `m1`: `ethtool -K m1-eth0 rxvlan off`. |
+| **`Live logs console empty`** | Stream disconnected or initial load pending. | Click **`Refresh Logs`** in the Live Logs toolbar. |
+
+---
+
+## 3. Compliance Verification: The 8 Core Requirements
+
+| # | System Requirement | Compliance Status | Architectural Implementation & Proof |
+| :-: | :--- | :---: | :--- |
+| **1** | **One IPv6 LAN with 5 emulated devices** | **MET** | Implemented in `ps007_topology.py`. Provisions `fd00:abcd::/64` across Open vSwitch `s1` with 1 Gateway Router (`r1`), 1 Monitor (`m1`), and **5 emulated IoT clients (`h1`–`h5`)**. |
+| **2** | **Short-lived local pseudonyms (no permanent IDs)** | **MET** | Implemented in `pseudonym.py`. Ephemeral HMAC pseudonyms ($P$) rotate every epoch (300s). Old key $K_{\text{epoch}}$ is actively zeroed in RAM. Zero MAC addresses stored. |
+| **3** | **Authenticated device sessions across address rotations** | **MET** | Implemented in `attribution.py` & `monitor.py`. Sessions anchored to switch ports maintain authenticated status across RFC 8981 SLAAC rotations via passive DAD NS verification. |
+| **4** | **Simulate 2 security attacks (including Rogue RAs)** | **MET** | 1. `attacks/rogue_ra.py` (Rogue RA prefix poisoning & Lifetime=0 DoS).<br>2. `attacks/ndp_flood.py` (Rotating-source NS/NA flood & horizontal target scanning). |
+| **5** | **Detect abnormal Neighbour Discovery message rates** | **MET** | Implemented in `detectors.py` (`NDPAbuseDetector`). RFC 4861 token buckets (NS/NA/RS), $n$-of-$m$ hysteresis, CUSUM drift detection, and distinct-target cardinality sweeps. |
+| **6** | **Use local correlation only** | **MET** | Correlation is strictly confined to local switch port tags (`VLAN 4100 + in_port`). No WAN, global, cross-subnet, or cloud tracking identifiers are used. |
+| **7** | **Verify pseudonym expiration & zero cross-tenant correlation** | **MET** | Verified in `pseudonym.py`. Eager/background TTL expiry, RAM key zeroing, cross-tenant isolation, and absence of cross-epoch linkage. |
+| **8** | **No behavioural profiling, identity recovery, or zero-risk claim** | **MET** | Zero ML packet-size/inter-arrival profiling (protocol rules only; no MAD on raw counts). One-way cryptographic hash prevents MAC recovery. System explicitly documents realistic tracking boundaries within active epochs. |
+
+---
+
+## 4. Full Technology Stack (7 Layers)
+
+```mermaid
+flowchart TD
+    L7["Layer 7: Web SOC Frontend Dashboard<br>Utilitarian 2016 Enterprise Theme · HTML5 Canvas 2D · Vanilla ES6+ JS · WebSocket Client"]
+    L6["Layer 6: Web Application & Streaming Engine<br>Flask REST API (/api/state, /api/history) · Server-Sent Events (SSE) · RFC 6455 WebSocket (:8765)"]
+    L5["Layer 5: Security Detection & Telemetry Layer<br>RFC 6105 RA-Guard · RFC 4861 Token Buckets · n-of-m Hysteresis · CUSUM Drift · events.jsonl"]
+    L4["Layer 4: Cryptography & Attribution Engine<br>HMAC-SHA256 Pseudonym Derivation · Ephemeral K_epoch Memory Wiping · SHA256 Ratchet"]
+    L3["Layer 3: Passive Mirror Monitoring & Packet Sniffer<br>Scapy Promiscuous Sniffer · Dot1Q VLAN Parser · Ingress Ether.src Stripping (Zero MAC)"]
+    L2["Layer 2: Software-Defined Switching (SDN)<br>Open vSwitch (OVS) · OpenFlow 1.3 · Ingress Port Mirroring (push_vlan: 4100+in_port)"]
+    L1["Layer 1: Network Virtualization & Linux Kernel<br>Mininet (Network Namespaces) · Linux Kernel SLAAC (RFC 8981) · radvd Daemon"]
+
+    L7 --> L6
+    L6 --> L5
+    L5 --> L4
+    L4 --> L3
+    L3 --> L2
+    L2 --> L1
 ```
 
 ---
 
-## 7. Compliance Verification: Zero MAC Fingerprinting
+## 5. System Architecture & Ingress Pipeline
 
-The legacy MAC tracker has been moved to `legacy/mac_diagnostic.py`. To confirm compliance with the PS-007 constraint across the active codebase:
+The following diagrams illustrate the physical Mininet topology and the zero-MAC packet attribution pipeline:
+
+### 5.1 Physical Network Topology (Mininet)
+
+```mermaid
+flowchart TD
+    subgraph LAN ["One IPv6 Subnet: fd00:abcd::/64"]
+        R1["Gateway Router (r1)<br>fd00:abcd::1 (radvd)"]
+        S1["Open vSwitch (s1)<br>OpenFlow 1.3 Port Tagging"]
+        M1["Security Monitor (m1)<br>fd00:abcd::2 (Promiscuous Sniffer)"]
+        
+        H1["IoT Client h1<br>(RFC 8981 60s Rotation)"]
+        H2["IoT Client h2<br>(RFC 8981 60s Rotation)"]
+        H3["IoT Client h3<br>(RFC 8981 60s Rotation)"]
+        H4["IoT Client h4<br>(RFC 8981 60s Rotation)"]
+        H5["IoT Client h5<br>(RFC 8981 60s Rotation)"]
+    end
+
+    R1 <-->|"Port 1 (wire: 5)"| S1
+    S1 -->|"Port 2: Mirrored Copy (VLAN 4100 + in_port)"| M1
+    H1 <-->|"Port 3 (wire: 7)"| S1
+    H2 <-->|"Port 4 (wire: 8)"| S1
+    H3 <-->|"Port 5 (wire: 9)"| S1
+    H4 <-->|"Port 6 (wire: 10)"| S1
+    H5 <-->|"Port 7 (wire: 11)"| S1
+```
+
+### 5.2 Zero-MAC Packet Ingress & Attribution Pipeline
+
+```mermaid
+flowchart TD
+    Client["IoT Client (h1..h5)<br>SLAAC DAD NS: src=::, tgt=fd00:abcd::..."] --> Switch["Open vSwitch (s1)"]
+    
+    Switch -->|"Priority 1: NORMAL L2/L3 Forwarding"| Gateway["Gateway Router (r1) / Hosts"]
+    Switch -->|"Priority 100: push_vlan (4100 + in_port)"| MonitorIntf["Monitor Ingress (m1-eth0)<br>ethtool rxvlan OFF"]
+    
+    MonitorIntf --> MacDrop["Zero-MAC Attribution Ingress<br>Strip & Drop Ether.src immediately"]
+    
+    MacDrop --> PortExtract["Extract Ingress Port from 802.1Q Tag<br>e.g. VLAN 4103 -> Session Anchor SES-PORT03"]
+    
+    PortExtract --> PseudoGen["PseudonymManager Engine<br>Compute P = HMAC-SHA256(K_epoch, tenant || session_id)[:8]<br>Bind IPv6 Address -> P"]
+    
+    PseudoGen --> Detectors{"Security Detectors Engine"}
+    
+    Detectors -->|"ICMPv6 RA"| RAGuard["RogueRADetector<br>Verify Port 1 Exclusivity & Subnet"]
+    Detectors -->|"ICMPv6 NS/NA"| NDPGuard["NDPAbuseDetector<br>Token Buckets · n-of-m · CUSUM · Scan Sweeps"]
+    
+    RAGuard --> Telemetry["Telemetry Emitter"]
+    NDPGuard --> Telemetry
+    
+    Telemetry --> Jsonl["Append events.jsonl"]
+    Telemetry --> Ws["Broadcast WebSocket (:8765) & SSE"]
+    Telemetry --> Snapshot["Atomic state_snapshot.json"]
+    
+    Ws --> Dashboard["SOC Web Dashboard (Flask / Vanilla JS)"]
+    Snapshot --> Dashboard
+```
+
+---
+
+## 6. Core Engine Modules in Detail
+
+### 6.1 `ps007_topology.py` - Mininet & OpenFlow 1.3 Tagging
+*File:* [`src/ps007_topology.py`](file:///home/nishantm/Documents/network/src/ps007_topology.py)
+
+Manages the software-defined Mininet network topology.
+- **Switch Flows (OpenFlow 1.3):**
+  - Table 0, Priority 1: Default fallback `actions=NORMAL` for standard L2/L3 IPv6 communication.
+  - Table 0, Priority 100 (Monitor Ingress): `in_port=m1_port, actions=NORMAL` with `no-flood` flag to avoid traffic reflection loops back to the monitor.
+  - Table 0, Priority 100 (Client/Router Ingress): For all access ports ($in\_p$), pushes an 802.1Q header with $\text{VID} = 4100 + in\_p$ and mirrors directly to monitor `m1`.
+- **Router Configuration (`r1`):**
+  - Assigned `fd00:abcd::1/64` and `fe80::1/64`.
+  - Runs `radvd` broadcasting router advertisements every 3–10 seconds.
+- **Client Configuration (`h1`–`h5`):**
+  - `net.ipv6.conf.all.accept_ra=2`
+  - `net.ipv6.conf.all.use_tempaddr=2` (RFC 8981 Privacy Extensions)
+  - `net.ipv6.conf.all.temp_prefered_lft=60` (Forces kernel SLAAC address rotation every 60s)
+  - `net.ipv6.conf.all.temp_valid_lft=120`
+  - `net.ipv6.conf.all.max_desync_factor=0` (Removes randomized jitter for deterministic testing)
+
+---
+
+### 6.2 `attribution.py` - Zero-MAC Attribution & DAD Binding
+*File:* [`src/attribution.py`](file:///home/nishantm/Documents/network/src/attribution.py)
+
+The core attribution engine that links rotating addresses back to physical switch anchors without reading MAC addresses.
+- **Ingress MAC Dropping:** `process_raw_scapy_packet` extracts `Dot1Q.vlan`, immediately disregards `Ether.src`, and evaluates network layer payloads.
+- **RFC 4862 DAD Verification:** Validates Duplicate Address Detection syntax:
+  1. Source IPv6 address MUST be the unspecified address (`::`).
+  2. Hop Limit MUST be `255`.
+  3. Target address MUST be a valid unicast IPv6 address within `fd00:abcd::/64`.
+  4. Target address MUST NOT be multicast, loopback, or unspecified.
+- **Bounded Allowance Per Window:** Enforces a hard threshold (maximum 3 DAD address updates per 60-second window per session). Excess bindings are flagged as `REJECT_EXCEEDED`, mitigating address exhaustion attacks.
+
+---
+
+### 6.3 `pseudonym.py` - Epoch-Keyed Pseudonyms & Forward Secrecy
+*File:* [`src/pseudonym.py`](file:///home/nishantm/Documents/network/src/pseudonym.py)
+
+Maintains isolated multi-tenant session stores, epoch keys, and cryptographic memory erasure.
+- **Pseudonym Derivation Formula:**
+  $$P = \text{HMAC-SHA256}(K_{\text{epoch}}, \; \text{tenant\_id} \parallel \text{session\_id})[0:8]$$
+- **Cryptographic Memory Erasure:** $K_{\text{epoch}}$ is stored in a mutable Python `bytearray(32)`. When `rotate_epoch()` is called, the old key is actively overwritten with binary zeroes in RAM before generating a fresh key:
+  ```python
+  for i in range(len(self._k_epoch)):
+      self._k_epoch[i] = 0
+  self._k_epoch = bytearray(os.urandom(32))
+  ```
+
+```mermaid
+flowchart LR
+    subgraph Epoch1 ["Epoch 1 (0 to 300s)"]
+        K1["Secret Key K_epoch_1"] --> P1["Pseudonym P_A = HMAC(K_epoch_1, SES-PORT03)"]
+    end
+
+    subgraph Rotation ["Epoch Transition"]
+        Wipe["Cryptographically Overwrite K_epoch_1 with 0x00 in RAM"]
+        Fresh["Generate Fresh 32-Byte Secret Key K_epoch_2"]
+        Wipe --> Fresh
+    end
+
+    subgraph Epoch2 ["Epoch 2 (300 to 600s)"]
+        Fresh --> K2["Secret Key K_epoch_2"]
+        K2 --> P2["Pseudonym P_B = HMAC(K_epoch_2, SES-PORT03)"]
+    end
+
+    Epoch1 --> Rotation
+    Rotation --> Epoch2
+```
+
+- **Lifecycle & TTL Stores:**
+  - `AddressBinding.expires_at`: Address binding TTL (default 120s). Lookups eagerly fail once expired.
+  - `SessionRecord.hard_expires_at`: Hard session TTL (default 3600s). Once elapsed, the session and all associated bindings are purged from memory.
+  - Multi-tenant segregation: Stores are keyed by `tenant_id`, guaranteeing cross-tenant isolation.
+
+---
+
+### 6.4 `detectors.py` - RA-Guard & Multi-Layer NDP Abuse Engine
+*File:* [`src/detectors.py`](file:///home/nishantm/Documents/network/src/detectors.py)
+
+Contains the stateless and stateful anomaly detection engines.
+
+#### 1. `RogueRADetector` (RFC 6105 RA-Guard)
+- **Port 1 Exclusive Authorization:** Only physical Port 1 (VLAN 4101 or wire VID 5) is authorized to transmit ICMPv6 Router Advertisements. Any RA originating from ports $\ge 2$ triggers `ROGUE_RA_UNAUTHORIZED_SOURCE` (Severity: CRITICAL).
+- **Prefix Guard:** Advertised prefixes must match `fd00:abcd::/64`. Divergent prefixes trigger `ROGUE_RA_UNEXPECTED_PREFIX`.
+- **Lifetime=0 DoS Detection:** Flags RAs advertising `router_lifetime == 0` (used by attackers to flush default routing tables).
+- **Burst Detection:** Flags $> 3$ RAs transmitted within a 1.0-second sliding window (`ROGUE_RA_BURST`).
+- **Parameter Inconsistency:** Flags anomalies in Cur Hop Limit ($\neq 64$).
+
+#### 2. `NDPAbuseDetector` (Neighbor Discovery Protocol Protection)
+Keyed per pseudonym ($P$) rather than per IP:
+- **Layer 1: RFC 4861 Token Buckets:**
+  - Neighbor Solicitation (NS): Capacity = 6.0, refill rate = 2.0 tokens/s (`MAX_MULTICAST_SOLICIT = 3`, `RETRANS_TIMER = 1s`).
+  - Neighbor Advertisement (NA): Capacity = 6.0, refill rate = 2.0 tokens/s.
+  - Router Solicitation (RS): Capacity = 4.0, refill rate = 0.5 tokens/s (`MAX_RTR_SOLICITATIONS = 3`, `RTR_SOLICITATION_INTERVAL = 4s`).
+- **Layer 2: $n$-of-$m$ Hysteresis Window:**
+  Tracks token bucket breaches over a sliding window of the last $m = 5$ packets. If $n \ge 3$ violations occur, triggers `NDP_RATE_ABUSE_HYSTERESIS` (Severity: HIGH).
+- **Layer 3: CUSUM (Cumulative Sum Control Chart) Drift:**
+  Catches stealthy, slow-rate floods that stay just below the token bucket refill rate:
+  $$S_k = \max(0, S_{k-1} + X_k - \mu - K)$$
+  Triggers `NDP_CUSUM_DRIFT_ALERT` when $S_k \ge 6.0$.
+- **Layer 4: Target Cardinality Sweeps (Reconnaissance Scanner):**
+  Tracks distinct target IPv6 addresses queried in NS packets over a sliding 10-second window. Soliciting $> 4$ distinct targets triggers `NDP_SCAN_CARDINALITY_ALERT` (Severity: HIGH).
+- **State Purge on Expiry:** When a pseudonym expires or an epoch rotates, all associated token buckets and tracking queues are purged via `delete_pseudonym_state(p)`.
+
+---
+
+### 6.5 `optional_mode_b/ratchet.py` - Active Cryptographic Ratchet
+*File:* [`src/optional_mode_b/ratchet.py`](file:///home/nishantm/Documents/network/src/optional_mode_b/ratchet.py)
+
+Strictly optional cryptographic hash ratchet utilized only when active client agents are explicitly enabled via `--enable-mode-b`.
+- **One-Way Hash Chain:**
+  $$S_{i+1} = \text{SHA-256}(S_i)$$
+- **HMAC Authentication Tag:**
+  $$\text{Tag} = \text{HMAC-SHA256}(S_i, \; \text{new\_addr} \parallel \text{str}(\text{counter}))$$
+- **Monotonic Replay Protection:** Rejects any rotation packet where $\text{counter} \le \text{last\_counter}$.
+- **Timing-Safe Verification:** Uses `hmac.compare_digest` to prevent side-channel timing attacks.
+
+---
+
+### 6.6 `telemetry.py` - Native RFC 6455 WebSocket & Streaming
+*File:* [`src/telemetry.py`](file:///home/nishantm/Documents/network/src/telemetry.py)
+
+Pure standard-library telemetry broadcasting engine with zero third-party pip dependencies.
+- **Native RFC 6455 Server:** Implements standard WebSocket framing, Sec-WebSocket-Key SHA-1 handshakes, and unmasked text frame encoding directly over raw TCP sockets on port `8765`.
+- **Structured JSONL Logs:** Writes atomic, line-delimited records to `events.jsonl` (`bind`, `rotation`, `alert`, `expiry`).
+- **Telemetry Replay Engine:** Supports offline playback of recorded JSONL event streams at configurable speeds (`python3 telemetry.py replay events.jsonl --speed 2.0`).
+
+---
+
+### 6.7 `frontend/` - 2016-Era Enterprise Web SOC Dashboard
+*Directory:* [`src/frontend/`](file:///home/nishantm/Documents/network/src/frontend/)
+
+A utilitarian, light-themed SOC dashboard engineered to look like a robust 2016-era enterprise web application (AdminLTE / pfSense style).
+- **Design Philosophy:**
+  - Background strictly pure white (`#ffffff`).
+  - Accent color strictly `#2d2f4d` (deep slate navy).
+  - Strict 0px border radius (`border-radius: 0 !important;` globally applied).
+  - Zero gradients, zero mouse animations, and zero framework bloat (Pure Vanilla JS).
+- **5 Dedicated Sidebar Pages:**
+  1. **`1- list clients` (`#view-clients`):** Monitored device registry table (Role, Status, Ephemeral Pseudonym, Active SLAAC IPv6, Rotations, Packets, Link Anchor). Gateway `r1` is clearly distinguished. Offending attacker nodes turn crimson red (`row-danger`).
+  2. **`2- network map` (`#view-map`):** Dynamic 2D HTML5 Canvas visualizer rendering Gateway (`r1`), Switch (`s1`), Monitor (`m1`), and active client pseudonyms. Attacking nodes turn solid red (`#c62828`).
+  3. **`3- attack logs` (`#view-attacks`):** Security incident ledger with severity badges (Critical/High), link anchor evidence, source IP, and RFC 6105 violation descriptions.
+  4. **`4- live logs` (`#view-logs`):** Monospace real-time terminal console with auto-scroll toggle, entries counter, and clear/refresh log view controls. Automatically populates recent events upon loading.
+  5. **`5- ip rotation history` (`#view-rotations`):** Per-pseudonym RFC 8981 privacy rotation chains displaying current active addresses and historical deprecated addresses with transition arrows.
+
+---
+
+## 7. Adversary Models & Attack Scenarios
+
+### Attack 1: Rogue Router Advertisement Injection
+*Script:* [`src/attacks/rogue_ra.py`](file:///home/nishantm/Documents/network/src/attacks/rogue_ra.py)
+* **Threat Model:** An attacker on a compromised client access port attempts to hijack default routing, conduct a Man-in-the-Middle (MitM) attack, or perform a Denial of Service (DoS) by injecting unauthorized RAs.
+* **Execution Options:**
+  - `--mode unauthorized`: Injects RAs from an unapproved router source or access port.
+  - `--mode lifetime0`: Injects RAs with `Router Lifetime = 0`, forcing victim nodes to immediately flush default routes.
+  - `--mode burst`: Transmits a rapid burst of RAs to overwhelm network queues.
+* **Detection:** Captured by `RogueRADetector` (RFC 6105 RA-Guard). The offending port is flagged as `ROGUE ATTACKER` and highlighted red on the dashboard.
+
+### Attack 2: Rotating-Source NDP Flood & Target Sweeping
+*Script:* [`src/attacks/ndp_flood.py`](file:///home/nishantm/Documents/network/src/attacks/ndp_flood.py)
+* **Threat Model:** An attacker generates high-rate Neighbor Solicitation (NS) or Neighbor Advertisement (NA) floods. To evade traditional per-IP rate limiters, the attacker randomizes their source IPv6 address every 2 seconds.
+* **Execution Options:**
+  - `-t NS` or `-t NA`: Selects the NDP message type to flood.
+  - `-r 15.0`: Transmits at 15 packets per second.
+  - `--rotate-sec 2.0`: Rotates source IPv6 address every 2 seconds.
+  - `--scan`: Randomizes target IPv6 addresses to simulate horizontal reconnaissance.
+* **Detection:** Captured by `NDPAbuseDetector`. Because packets arrive from the same physical link anchor, all rotating IPs map to the **same pseudonym $P$**, exhausting the token bucket and triggering `NDP_RATE_ABUSE_HYSTERESIS` and `NDP_SCAN_CARDINALITY_ALERT`.
+
+---
+
+## 8. REST API & Telemetry Event Schema
+
+The Flask dashboard (`src/frontend/app.py`) serves the following REST and streaming endpoints:
+
+| Endpoint | Method | Description | Sample Response Fields |
+| :--- | :---: | :--- | :--- |
+| **`/api/state`** | `GET` | Returns live atomic snapshot from monitor | `uptime`, `sessions`, `router`, `alerts`, `epoch_remaining` |
+| **`/api/history`** | `GET` | Returns recent events from `events.jsonl` (supports `?limit=200`) | `count`, `events`: `[{ts, type, pseudonym, ...}]` |
+| **`/api/privacy_audit`** | `GET` | Audits zero-MAC compliance and privacy guarantees | `compliance.zero_mac_leakage: true`, `mac_addresses_stored: 0` |
+| **`/api/stream`** | `GET` | Server-Sent Events (SSE) live telemetry stream | `data: {"type": "bind", "pseudonym": "P_4A81", ...}` |
+| **`ws://<host>:8765`** | `WS` | Sub-millisecond RFC 6455 WebSocket push | Direct JSON event delivery |
+
+### Telemetry Event Types (`events.jsonl`):
+```json
+// 1. DAD Binding Event
+{"ts": 1792847002.87, "type": "BIND_DAD", "session_id": "SES-PORT07", "pseudonym": "4DB132CF", "addr": "fd00:abcd::3d48:..."}
+
+// 2. RFC 8981 Address Rotation Event
+{"ts": 1792761036.45, "type": "rotation", "session_id": "SES-PORT03", "pseudonym": "B4C12E09", "new_ip": "fd00:abcd::2088"}
+
+// 3. Security Alert Event
+{"ts": 1792761080.78, "type": "alert", "alert_type": "ROGUE_RA_UNAUTHORIZED_SOURCE", "severity": "CRITICAL", "pseudonym": "ROGUE-PORT04", "src": "fe80::4", "evidence": {"ingress_port": 4}}
+
+// 4. Session Expiry Event
+{"ts": 1792764576.00, "type": "expiry", "session_id": "SES-PORT03", "pseudonym": "B4C12E09"}
+```
+
+---
+
+## 9. Zero-MAC Compliance Verification Command
+
+To independently verify zero-MAC compliance across the active codebase:
 ```bash
 grep -rn "Ether.src" --exclude-dir=legacy .
 ```
-Result: Zero occurrences in active packet processing or attribution logic. All MAC addresses are unconditionally dropped at ingress.
+**Result:** Zero occurrences in active packet processing or attribution logic. Layer 2 Ethernet addresses are unconditionally stripped and dropped at ingress.
