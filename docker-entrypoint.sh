@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
+# Ensure DISPLAY is set for Mininet X11 terminal spawning
+export DISPLAY="${DISPLAY:-:0}"
+
 echo "=================================================================="
 echo "  PS-007: Privacy-Aware IPv6 IoT Security Monitor"
 echo "  Containerized SDN + Zero-MAC NIDS + Utilitarian SOC Dashboard"
@@ -25,10 +28,7 @@ if [ "$#" -gt 0 ] && [ "$1" != "default" ]; then
 fi
 
 echo "[+] Open vSwitch is active."
-echo "[+] Starting Mininet Topology & Security Monitor..."
-echo "------------------------------------------------------------------"
-echo "👉 Evaluator Web Dashboard: http://localhost:5000"
-echo "------------------------------------------------------------------"
+echo "[+] Starting Mininet Topology..."
 
 cd /app/src
 exec python3 ps007_topology.py

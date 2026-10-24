@@ -2,6 +2,7 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:0
 
 # Install Open vSwitch, Mininet, radvd, networking tools, and Python dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -20,6 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-scapy \
     python3-flask \
     xterm \
+    x11-xserver-utils \
+    xauth \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

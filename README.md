@@ -73,139 +73,104 @@ flowchart TD
 
 ---
 
-## 3. Quick Setup & Execution Guide
+## 3. Quick Start Guide (One-Click Docker)
 
-### 3.1 Prerequisites & Installation
+[![Docker Hub Image](https://img.shields.io/badge/Docker%20Hub-nishantmajumdar%2Fps007--ipv6--monitor-blue?logo=docker)](https://hub.docker.com/r/nishantmajumdar/ps007-ipv6-monitor)
 
-* **Operating System:** Linux (Arch/CachyOS or Ubuntu/Debian recommended).
-* **Privileges:** `sudo` / root permissions (required by Mininet for network namespaces and Open vSwitch).
+The complete SDN emulation, Open vSwitch daemon, zero-MAC sniffer engine, and Web SOC Dashboard are published on Docker Hub:  
+👉 **Docker Repository:** [hub.docker.com/r/nishantmajumdar/ps007-ipv6-monitor](https://hub.docker.com/r/nishantmajumdar/ps007-ipv6-monitor)
 
-#### Option A: Ubuntu / Debian
+No package installation or environment setup is required. Run `xhost +local:root` once on your host (to allow GUI XTerm windows), then start the container:
+
 ```bash
-sudo apt update
-sudo apt install -y \
-    mininet \
-    openvswitch-switch \
-    radvd \
-    ethtool \
-    python3 \
-    python3-pip \
-    python3-scapy \
-    python3-flask \
-    xterm
+# 1. Allow container to display GUI xterm windows on host
+xhost +local:root
+
+# 2. Run container (Docker will automatically fetch the ~84 MB image from Docker Hub)
+docker run -it --privileged \
+  -e DISPLAY=$DISPLAY \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  -v /lib/modules:/lib/modules:ro \
+  -p 5000:5000 -p 8765:8765 \
+  nishantmajumdar/ps007-ipv6-monitor:latest
 ```
 
-#### Option B: Arch Linux / CachyOS
+**Single-line copy-paste command:**
 ```bash
-# 1. Install core networking tools, OVS, and Python packages via pacman
-sudo pacman -Syu --needed \
-    openvswitch \
-    radvd \
-    ethtool \
-    python \
-    python-pip \
-    python-scapy \
-    python-flask \
-    xterm \
-    iproute2
-
-# 2. Install Mininet from AUR (using yay or paru)
-yay -S --needed mininet
-
-# 3. Load Open vSwitch kernel module and start services
-sudo modprobe openvswitch
-sudo systemctl enable --now ovsdb-server ovs-vswitchd
+xhost +local:root && docker run -it --privileged -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix:rw -v /lib/modules:/lib/modules:ro -p 5000:5000 -p 8765:8765 nishantmajumdar/ps007-ipv6-monitor:latest
 ```
+
+*(Or if you have cloned this repository: `xhost +local:root && docker compose run --rm --service-ports ps007-monitor`)*
 
 ---
 
-### 3.2 Running the System
+### 3.1 Evaluator Step-by-Step Guide (`mininet>` Prompt)
 
-Navigate to the source directory:
+Once the container boots, you are at the Mininet CLI prompt (`mininet>`). Follow these simple steps:
+
+#### Step 1: Start the Security Monitor on `m1` (Launches Web UI)
+From within Mininet, open a terminal window for monitor node `m1`:
 ```bash
-cd src
+mininet> xterm m1
 ```
-
-#### Step 1: Start the Mininet Network Emulation
-Launch the SDN topology:
-```bash
-sudo python3 ps007_topology.py
-```
-*Initializes Open vSwitch `s1`, launches Gateway Router `r1` running `radvd`, configures Monitor `m1`, and enables RFC 8981 fast address rotation (60s lifetime) on clients `h1`–`h5`.*
-
-Keep this Mininet CLI prompt open! All subsequent nodes and scripts are launched from **within Mininet**.
-
----
-
-#### Step 2: Start the Security Monitor (with Integrated Web UI)
-From **within mininet**, launch monitor `m1`:
-```bash
-xterm m1
-```
-Then, inside the newly opened `m1` terminal, launch the monitor script:
+Then, inside the newly opened `m1` terminal, launch the monitor:
 ```bash
 python3 monitor.py
 ```
+*(Or if running headless without X11: `mininet> m1 python3 monitor.py &`)*
 
-*What happens:*
-* **Packaged Web Dashboard:** `monitor.py` automatically packages and launches the SOC Web Dashboard on `http://localhost:5000`.
-* **One-Click Terminal Link:** Displays a direct clickable hyperlink in the terminal banner:
-  ```text
-  🌐 WEB UI (CLICK TO OPEN): http://localhost:5000
-  ```
-  Click or Ctrl+Click `http://localhost:5000` to open the SOC dashboard in your web browser!
-* **Zero-MAC Sniffing:** Promiscuously sniffs mirrored packets on `m1-eth0`, stripping MAC addresses at ingress and tracking RFC 4862 DAD Neighbor Solicitations.
-* **WebSocket Stream:** Native RFC 6455 server broadcasts telemetry on port `8765`.
-* *(Optional: pass `--open` to auto-launch your browser: `python3 monitor.py --open`)*
+**Once `monitor.py` starts, open your web browser to:**
+```
+http://localhost:5000
+```
+*(Or click the clickable link printed in the `m1` terminal banner).*
 
 ---
 
-#### Step 3: Generate Benign Traffic & Observe Address Rotations
-From **within mininet**, launch shells of clients:
+#### Step 2: Generate Benign Traffic & Observe RFC 8981 Rotations
+From within Mininet, launch shells for clients:
 ```bash
-xterm h1 h2 h3
+mininet> xterm h1 h2 h3
 ```
-Then, inside the client terminals, ping the Gateway router:
+Then, inside client `h1`, ping the Gateway router:
 ```bash
-# Ping Gateway from Client 
 ping -6 -c 5 fd00:abcd::1
 ```
+*(Or directly from Mininet CLI: `mininet> h1 ping -6 -c 5 fd00:abcd::1`)*
 
 *What happens:*
-* Clients emit RFC 4862 DAD Neighbor Solicitations.
-* The Attribution Engine binds addresses to physical ports (`SES-PORT03`, `SES-PORT04`) and maps them to pseudonyms.
+* Client `h1` emits RFC 4862 DAD Neighbor Solicitations.
+* The Attribution Engine binds addresses to physical switch ports (`SES-PORT03`) and maps them to pseudonyms.
 * Clients appear on the dashboard client table and 2D network map.
-* **Every 60 seconds**, the Linux kernel rotates to a new temporary IPv6 address. The dashboard seamlessly records the new address in `5- ip rotation history` while preserving the authenticated session.
+* **Every 60 seconds**, the Linux kernel rotates to a new temporary IPv6 address. The dashboard seamlessly records the new address in `5- ip rotation history` while preserving the authenticated session. You can inspect the client's addresses at any time:
+  ```bash
+  mininet> h1 ip -6 addr show dev h1-eth0
+  ```
 
 ---
 
-#### Step 4: Simulate Security Attacks & Observe Detection
+#### Step 3: Simulate Security Attacks & Observe Detection
 
 ##### Attack Scenario A: Rogue Router Advertisement Injection
-From **within mininet**, launch a terminal for client `h4`:
+From within Mininet, open a terminal for `h4` (or run directly from CLI):
 ```bash
-xterm h4
+mininet> xterm h4
+# Then inside h4 terminal: python3 attacks/rogue_ra.py
 ```
-Then, execute the attack script:
-```bash
-python3 attacks/rogue_ra.py
-```
-*(Or with options: `python3 attacks/rogue_ra.py --mode lifetime0`)*
+*(Or directly from Mininet CLI: `mininet> h4 python3 attacks/rogue_ra.py`)*
 
-* **Detection:** Captured by `RogueRADetector` (RFC 6105 RA-Guard). Port 4 is flagged as `ROGUE ATTACKER` and turns **solid crimson red** on the Web SOC Map and Client Table.
+* **Detection:** Captured by `RogueRADetector` (RFC 6105 RA-Guard). Port 4 is immediately flagged as `ROGUE ATTACKER` and turns **solid crimson red** on the Web SOC Map and Client Table.
 
 ##### Attack Scenario B: Rotating-Source NDP Flood & Network Sweep
-From **within mininet**, launch a terminal for client `h3`:
+From within Mininet, open a terminal for `h3` (or run directly from CLI):
 ```bash
-xterm h3
+mininet> xterm h3
+# Then inside h3 terminal: python3 attacks/ndp_flood.py
 ```
-Then, execute the flood script:
-```bash
-python3 attacks/ndp_flood.py
-```
-*(Or with options: `python3 attacks/ndp_flood.py -t NS -r 15.0 --rotate-sec 2.0 --scan`)*
+*(Or directly from Mininet CLI: `mininet> h3 python3 attacks/ndp_flood.py`)*
 
 * **Detection:** The attacker randomizes their source IPv6 address every 2 seconds to evade per-IP rate limiters. Because all packets arrive from physical Port 3, the monitor maps every rotating IP to the **same pseudonym $P$**, exhausting token buckets and triggering `NDP_RATE_ABUSE_HYSTERESIS` and `NDP_SCAN_CARDINALITY_ALERT`.
+*(Or with scanning mode: `mininet> h3 python3 attacks/ndp_flood.py -t NS -r 15.0 --rotate-sec 2.0 --scan`)*
 
 ---
 
