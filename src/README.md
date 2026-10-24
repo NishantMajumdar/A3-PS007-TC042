@@ -1,7 +1,7 @@
 # PS-007: IPv6 IoT Security Monitoring System
 ### Privacy-Aware Ephemeral Attribution, RFC 8981 Rotation Tracking, and Anomaly Detection
 
-> **TNP Cybersecurity Research Labs**  
+> **The Network Project** A3-PS007-TC042 
 > **Strict Operational Constraint:** Zero Hardware MAC Fingerprinting (`Ether.src` stripped at ingress).  
 > **Primary Philosophy:** Passive Black-Box IoT Tracking (Mode A) with Zero Client Software Dependencies.
 
@@ -147,7 +147,7 @@ python3 monitor.py
   Simply click (or Ctrl+Click) `http://localhost:5000` to open the SOC dashboard in your web browser!
 - **Promiscuous Sniffing:** Sniffs mirrored packets on `m1-eth0`, stripping MAC addresses at ingress and tracking RFC 4862 DAD Neighbor Solicitations.
 - **WebSocket Streaming:** Native RFC 6455 server broadcasts telemetry on port `8765`.
-- *(Optional: pass `--open` to auto-launch your browser: `./launch_node.sh m1 "python3 monitor.py --open"`)*
+- *(Optional: pass `--open` to auto-launch your browser: `python3 monitor.py --open`)*
 
 **Explore the 5 Dedicated Sidebar Pages:**
 1. **`1- list clients`:** Live table of all monitored devices with ephemeral pseudonyms, active SLAAC addresses, rotation counts, and link anchors.
@@ -179,18 +179,15 @@ ping -6 -c 5 fd00:abcd::1
 #### Step 4: Simulate Attacks & Observe Real-Time Detection
 
 ##### Attack Scenario A: Rogue Router Advertisement Injection
-From **within mininet** launch shells of clients.
+From **within mininet**, launch a terminal for client `h4`:
 ```bash
-xterm h1 h2 h3
+xterm h4
 ```
-Then
+Then, execute the attack script:
 ```bash
 python3 attacks/rogue_ra.py
 ```
-OR
-```bash
-python3 attacks/ndp_flood.py
-```
+*(Or with options: `python3 attacks/rogue_ra.py --mode lifetime0`)*
 
 *Detection Result:*
 - The monitor immediately intercepts the unauthorized RA arriving on client access port 4.
@@ -200,8 +197,18 @@ python3 attacks/ndp_flood.py
   - Row `SES-PORT04` turns red with a `ROGUE ATTACKER` badge on **`1- list clients`**.
   - A detailed violation record appears under **`3- attack logs`**.
 
-*Detection Result:*  
+##### Attack Scenario B: Rotating-Source NDP Flood & Network Sweep
+From **within mininet**, launch a terminal for client `h3`:
+```bash
+xterm h3
+```
+Then, execute the flood script:
+```bash
+python3 attacks/ndp_flood.py
+```
+*(Or with options: `python3 attacks/ndp_flood.py -t NS -r 15.0 --rotate-sec 2.0 --scan`)*
 
+*Detection Result:*  
 - The attacker randomizes their source IPv6 address every 2 seconds to evade traditional per-IP rate limiters.
 - Because all packets arrive from physical Port 3, the monitor maps every rotating IP to the **same pseudonym $P$**.
 - `NDPAbuseDetector` token buckets are exhausted, triggering `NDP_RATE_ABUSE_HYSTERESIS` and `NDP_SCAN_CARDINALITY_ALERT` in under 750 milliseconds.

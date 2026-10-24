@@ -42,8 +42,8 @@ ENABLE_MODE_B=1 python3 monitor.py
 ```
 
 ### Launching Optional Mode B Agent on a Client
+From within a client terminal (e.g. `xterm h1`):
 ```bash
 python3 optional_mode_b/optional_client_agent.py
-# Or via launcher:
-./launch_node.sh --mode-b h1
 ```
+*(Or directly from Mininet CLI: `mininet> h1 python3 optional_mode_b/optional_client_agent.py &`)*

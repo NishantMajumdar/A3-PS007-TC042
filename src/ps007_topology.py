@@ -144,9 +144,8 @@ interface r1-eth0 {
     else:
         info("*** Manual Mode: Launching Mininet CLI\n")
         info("*** Instructions:\n")
-        info("    Start Monitor on m1 : m1 python3 monitor.py &\n")
-        info("    Black-Box Clients   : h1..h5 run ZERO software. Test manually: h1 ping -6 fd00:abcd::1\n")
-        info("    Or open launcher    : ./launch_node.sh h1\n\n")
+        info("    Start Monitor on m1 : xterm m1  -> python3 monitor.py (or: m1 python3 monitor.py &)\n")
+        info("    Black-Box Clients   : xterm h1 h2 h3 -> ping -6 fd00:abcd::1\n\n")
         CLI(net)
 
     info("*** Stopping Network and Cleaning Up\n")
@@ -173,7 +172,7 @@ def run_automated_test(net, clients, m1, duration=90):
     time.sleep(5)
 
     info(f"\n*** [TEST] Entering observation window ({duration}s)...\n")
-    info("*** [TEST] You can run commands manually via './launch_node.sh h1' in another terminal.\n\n")
+    info("*** [TEST] You can observe the terminal or open client terminals via 'xterm h1 h2'.\n\n")
 
     start_time = time.time()
     last_print = 0
