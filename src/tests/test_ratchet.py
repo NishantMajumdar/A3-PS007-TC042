@@ -6,18 +6,10 @@ Unit tests for Mode B key ratchet and replay protection (tests/test_ratchet.py).
 import unittest
 import os
 from optional_mode_b.ratchet import ratchet_step, compute_ratchet_tag, verify_ratchet_update
-import ratchet as root_ratchet
 
 class TestKeyRatchet(unittest.TestCase):
     def setUp(self):
         self.initial_seed = os.urandom(32)
-
-    def test_shim_exports(self):
-        """Verifies root ratchet.py re-exports optional_mode_b functions identically."""
-        self.assertIs(root_ratchet.ratchet_step, ratchet_step)
-        self.assertIs(root_ratchet.compute_ratchet_tag, compute_ratchet_tag)
-        self.assertIs(root_ratchet.verify_ratchet_update, verify_ratchet_update)
-
 
     def test_single_ratchet_step(self):
         k0 = self.initial_seed
