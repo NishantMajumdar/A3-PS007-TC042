@@ -1,0 +1,16 @@
+services:
+  ps007-monitor:
+    build: .
+    image: ps007-ipv6-monitor:latest
+    container_name: ps007_evaluator
+    privileged: true
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    volumes:
+      - /lib/modules:/lib/modules:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    ports:
+      - "5000:5000"
+      - "8765:8765"
+    tty: true
+    stdin_open: true
