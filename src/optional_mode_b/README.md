@@ -1,7 +1,7 @@
 # Optional Mode B: Active Client Agent & Cryptographic Ratchet
 
 ## Overview
-
+vibe coded
 **Mode A is the PRIMARY operational mode for PS-007.**
 In Mode A, IoT devices are treated as **100% black-box endpoints** without any custom software or agents. All rotation tracking, pseudonym derivation, and anomaly detection occur passively via OpenFlow 1.3 switch port mirroring and RFC 4862 Duplicate Address Detection (DAD) Neighbor Solicitations.
 
