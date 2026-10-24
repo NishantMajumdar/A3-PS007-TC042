@@ -24,7 +24,9 @@ document.addEventListener("DOMContentLoaded", () => {
     let wsConnected = false;
     let currentSessions = [];
     let liveLogCount = 0;
-    const MAX_LIVE_LOGS = 300;
+    let lastHistoryPollTime = 0;
+    const seenEventKeys = new Set();
+    const MAX_LIVE_LOGS = 500;
 
     // View Mapping: sidebar data-view -> DOM element id
     const VALID_VIEWS = [
@@ -70,12 +72,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // 4. Special handling for Network Map canvas
         if (viewId === "view-map") {
-            // Give browser 20ms to apply display: block layout before recalculating canvas size
             setTimeout(() => {
                 if (topology && typeof topology._initCanvas === "function") {
                     topology._initCanvas();
                 }
             }, 30);
+        }
+
+        // 5. Special handling for Live Logs tab
+        if (viewId === "view-logs") {
+            const consoleEl = document.getElementById("liveLogsConsole");
+            if (consoleEl && consoleEl.querySelectorAll(".log-entry").length <= 1) {
+                loadLogHistory(false);
+            }
+            const chkAutoScroll = document.getElementById("chkAutoScroll");
+            if (consoleEl && chkAutoScroll && chkAutoScroll.checked) {
+                setTimeout(() => {
+                    consoleEl.scrollTop = consoleEl.scrollHeight;
+                }, 40);
+            }
         }
     }
 
@@ -185,44 +200,154 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // ==========================================================================
-    // 4. LIVE EVENT HANDLER (WebSocket / SSE Push)
+    // 4. EVENT PARSING & DEDUPLICATION UTILITIES
     // ==========================================================================
-    function handleLiveEvent(evt) {
-        const now = new Date();
-        const timeStr = now.toTimeString().split(" ")[0];
-        const type = (evt.type || "EVENT").toUpperCase();
+    function getEventKey(evt) {
+        if (!evt) return "";
+        return `${evt.ts || evt.timestamp || ''}_${evt.type || ''}_${evt.session_id || ''}_${evt.pseudonym || ''}_${evt.target || evt.addr || evt.new_ip || evt.alert_type || ''}_${evt.details || ''}`;
+    }
 
-        if (type === "BIND_DAD" || type === "BIND") {
+    function parseEventPayload(evt) {
+        let timeStr = "00:00:00";
+        if (evt.iso_time && evt.iso_time.includes("T")) {
+            timeStr = evt.iso_time.split("T")[1].replace("Z", "");
+        } else if (evt.ts || evt.timestamp) {
+            const d = new Date((evt.ts || evt.timestamp) * 1000);
+            timeStr = d.toTimeString().split(" ")[0];
+        } else {
+            timeStr = new Date().toTimeString().split(" ")[0];
+        }
+
+        const rawType = (evt.type || "EVENT").toUpperCase();
+        let badgeClass = "badge-accent";
+        let typeStr = rawType;
+        let message = "";
+
+        if (rawType === "BIND_DAD" || rawType === "BIND") {
+            typeStr = "BIND_DAD";
+            badgeClass = "badge-green";
             const sid = evt.session_id || "UNKNOWN";
             const pseudo = evt.pseudonym || "NEW_CLIENT";
-            const addr = evt.addr || evt.target || "N/A";
-            topology.triggerPacketFlow(sid, "s1", "#2e7d32");
-            appendConsoleLog(timeStr, "BIND_DAD", `DAD Bind: Anchor ${sid} -> ${pseudo} (${addr})`, "badge-green");
-        } else if (type === "ROTATION") {
+            const addr = evt.target || evt.addr || "N/A";
+            message = evt.details || `Bound tentative SLAAC ${addr} -> ${pseudo} (${sid})`;
+        } else if (rawType === "ROTATION") {
+            typeStr = "ROTATION";
+            badgeClass = "badge-purple";
             const sid = evt.session_id || "UNKNOWN";
             const pseudo = evt.pseudonym || sid;
             const newIp = evt.new_ip || evt.addr || "N/A";
+            message = `RFC 8981 Rotation: P=${pseudo} -> ${newIp}` + (sid ? ` [${sid}]` : "");
+        } else if (rawType === "ALERT") {
+            typeStr = "ALERT";
+            badgeClass = "badge-red";
+            const alertType = evt.alert_type || "SECURITY_ALERT";
+            const sev = evt.severity || "CRITICAL";
+            const desc = evt.description || "Violation detected";
+            const srcStr = evt.src ? ` (Src: ${evt.src})` : "";
+            message = `[${sev}] ${alertType}: ${desc}${srcStr}`;
+        } else if (rawType === "EXPIRY") {
+            typeStr = "EXPIRY";
+            badgeClass = "badge-amber";
+            message = `Session expired: ${evt.session_id || 'UNKNOWN'} (P=${evt.pseudonym || '---'})`;
+        } else {
+            typeStr = rawType;
+            badgeClass = "badge-accent";
+            message = evt.details || evt.description || JSON.stringify(evt);
+        }
+
+        return { timeStr, typeStr, message, badgeClass };
+    }
+
+    // ==========================================================================
+    // 5. LIVE EVENT HANDLER (WebSocket / SSE Push)
+    // ==========================================================================
+    function handleLiveEvent(evt) {
+        const key = getEventKey(evt);
+        if (key && seenEventKeys.has(key)) {
+            return;
+        }
+        if (key) seenEventKeys.add(key);
+
+        const { timeStr, typeStr, message, badgeClass } = parseEventPayload(evt);
+        appendConsoleLog(timeStr, typeStr, message, badgeClass, true);
+
+        const rawType = (evt.type || "").toUpperCase();
+        if (rawType === "BIND_DAD" || rawType === "BIND") {
+            const sid = evt.session_id || "UNKNOWN";
+            topology.triggerPacketFlow(sid, "s1", "#2e7d32");
+        } else if (rawType === "ROTATION") {
+            const sid = evt.session_id || "UNKNOWN";
             topology.triggerPacketFlow(sid, "s1", "#6a1b9a");
-            appendConsoleLog(timeStr, "ROTATION", `RFC 8981 Rotation: P=${pseudo} -> ${newIp}`, "badge-purple");
-        } else if (type === "ALERT") {
+        } else if (rawType === "ALERT") {
             const sid = (evt.evidence && evt.evidence.session_id) || evt.pseudonym || "UNKNOWN";
             topology.markDeviceAsRogue(sid, evt.pseudonym);
             topology.triggerPacketFlow(sid, "s1", "#c62828");
-            const alertType = evt.alert_type || "SECURITY_ALERT";
-            const desc = evt.description || "Violation detected";
-            appendConsoleLog(timeStr, "ALERT", `[${evt.severity || 'CRITICAL'}] ${alertType}: ${desc}`, "badge-red");
-        } else if (type === "EXPIRY") {
-            appendConsoleLog(timeStr, "EXPIRY", `Session expired: ${evt.session_id} (P=${evt.pseudonym})`, "badge-amber");
-        } else {
-            appendConsoleLog(timeStr, type, JSON.stringify(evt), "badge-accent");
         }
 
-        // Trigger immediate state sync to update counters and tables
+        // Refresh snapshot counters
         fetchState();
     }
 
     // ==========================================================================
-    // 5. PERIODIC SNAPSHOT SYNCHRONIZATION (GET /api/state)
+    // 6. HISTORICAL LOGS LOADER (/api/history)
+    // ==========================================================================
+    function loadLogHistory(forceRefresh = false) {
+        fetch("/api/history?limit=150")
+            .then((res) => res.json())
+            .then((json) => {
+                if (json.status === "ok" && Array.isArray(json.events)) {
+                    const consoleEl = document.getElementById("liveLogsConsole");
+                    if (!consoleEl) return;
+
+                    const hasExistingLogs = consoleEl.querySelectorAll(".log-entry").length > 0;
+                    const hasOnlyPlaceholder = consoleEl.querySelectorAll(".log-entry").length === 1 &&
+                        consoleEl.textContent.includes("Connecting to live");
+
+                    if (forceRefresh || hasOnlyPlaceholder || !hasExistingLogs) {
+                        consoleEl.innerHTML = "";
+                        seenEventKeys.clear();
+                        liveLogCount = 0;
+                    }
+
+                    // Render events chronologically
+                    for (const evt of json.events) {
+                        const key = getEventKey(evt);
+                        if (key && seenEventKeys.has(key)) continue;
+                        if (key) seenEventKeys.add(key);
+
+                        const { timeStr, typeStr, message, badgeClass } = parseEventPayload(evt);
+                        appendConsoleLog(timeStr, typeStr, message, badgeClass, false);
+                    }
+
+                    // If zero events in history, show ready status
+                    if (consoleEl.children.length === 0) {
+                        consoleEl.innerHTML = `
+                            <div class="log-entry">
+                                <span class="log-time">[00:00:00]</span>
+                                <span class="log-type"><span class="badge badge-accent">SYSTEM</span></span>
+                                <span class="log-msg">Telemetry stream active. Awaiting network events from monitor...</span>
+                            </div>
+                        `;
+                    }
+
+                    const counterEl = document.getElementById("logCounterText");
+                    if (counterEl) {
+                        counterEl.textContent = `Entries: ${consoleEl.children.length}`;
+                    }
+
+                    const chkAutoScroll = document.getElementById("chkAutoScroll");
+                    if (chkAutoScroll && chkAutoScroll.checked) {
+                        consoleEl.scrollTop = consoleEl.scrollHeight;
+                    }
+                }
+            })
+            .catch((err) => {
+                console.error("Failed to load historical logs:", err);
+            });
+    }
+
+    // ==========================================================================
+    // 7. PERIODIC SNAPSHOT SYNCHRONIZATION (GET /api/state)
     // ==========================================================================
     function fetchState() {
         fetch("/api/state")
@@ -235,6 +360,13 @@ document.addEventListener("DOMContentLoaded", () => {
             .catch((err) => {
                 console.error("Error synchronizing state snapshot:", err);
             });
+
+        // If WebSocket is not connected, periodically poll /api/history to keep logs live
+        const nowMs = Date.now();
+        if (!wsConnected && (nowMs - lastHistoryPollTime > 3000)) {
+            lastHistoryPollTime = nowMs;
+            loadLogHistory(false);
+        }
     }
 
     function renderDashboard(data) {
@@ -297,7 +429,6 @@ document.addEventListener("DOMContentLoaded", () => {
         // C. Page 2: Network Topology Map (#view-map)
         // ----------------------------------------------------------------------
         topology.syncDiscoveredSessions(currentSessions);
-        // Ensure all alerted offenders stay flagged as red rogue nodes
         for (const a of alerts) {
             const sid = (a.evidence && a.evidence.session_id) || a.pseudonym;
             if (sid) {
@@ -317,10 +448,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // ==========================================================================
-    // 6. VIEW 1: LIST CLIENTS RENDERING
+    // 8. VIEW 1: LIST CLIENTS RENDERING
     // ==========================================================================
     function renderClientsView(data, sessions) {
-        // Stats bar
         const statTotalNodes = document.getElementById("statTotalNodes");
         const statAuthNodes = document.getElementById("statAuthNodes");
         const statRogueNodes = document.getElementById("statRogueNodes");
@@ -337,7 +467,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (statRogueNodes) statRogueNodes.textContent = rogueCount;
         if (statTotalRots) statTotalRots.textContent = `${data.total_rotations || 0}x`;
 
-        // Table
         const tbody = document.getElementById("devicesTableBody");
         if (!tbody) return;
         tbody.innerHTML = "";
@@ -420,7 +549,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // ==========================================================================
-    // 7. VIEW 3: ATTACK LOGS RENDERING
+    // 9. VIEW 3: ATTACK LOGS RENDERING
     // ==========================================================================
     function renderAttacksView(alerts) {
         const critAlertCount = document.getElementById("critAlertCount");
@@ -491,11 +620,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // ==========================================================================
-    // 8. VIEW 4: LIVE LOGS CONSOLE RENDERING
+    // 10. VIEW 4: LIVE LOGS CONSOLE RENDERING
     // ==========================================================================
-    function appendConsoleLog(timeStr, typeStr, message, badgeClass) {
+    function appendConsoleLog(timeStr, typeStr, message, badgeClass, autoScroll = true) {
         const consoleEl = document.getElementById("liveLogsConsole");
         if (!consoleEl) return;
+
+        // Clear placeholder if present
+        if (consoleEl.children.length === 1 && consoleEl.textContent.includes("Connecting to live")) {
+            consoleEl.innerHTML = "";
+        }
 
         const entry = document.createElement("div");
         entry.className = "log-entry";
@@ -521,7 +655,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Auto scroll to bottom
         const chkAutoScroll = document.getElementById("chkAutoScroll");
-        if (chkAutoScroll && chkAutoScroll.checked) {
+        if (autoScroll && chkAutoScroll && chkAutoScroll.checked) {
             consoleEl.scrollTop = consoleEl.scrollHeight;
         }
     }
@@ -532,16 +666,30 @@ document.addEventListener("DOMContentLoaded", () => {
         btnClearLogs.addEventListener("click", () => {
             const consoleEl = document.getElementById("liveLogsConsole");
             if (consoleEl) {
-                consoleEl.innerHTML = "";
+                consoleEl.innerHTML = `
+                    <div class="log-entry">
+                        <span class="log-time">[00:00:00]</span>
+                        <span class="log-type"><span class="badge badge-accent">SYSTEM</span></span>
+                        <span class="log-msg">Log view cleared by operator. Awaiting incoming events...</span>
+                    </div>
+                `;
                 liveLogCount = 0;
             }
             const counterEl = document.getElementById("logCounterText");
-            if (counterEl) counterEl.textContent = "Entries: 0";
+            if (counterEl) counterEl.textContent = "Entries: 1";
+        });
+    }
+
+    // Button: Refresh Logs
+    const btnRefreshLogs = document.getElementById("btnRefreshLogs");
+    if (btnRefreshLogs) {
+        btnRefreshLogs.addEventListener("click", () => {
+            loadLogHistory(true);
         });
     }
 
     // ==========================================================================
-    // 9. VIEW 5: IP ROTATION HISTORY RENDERING
+    // 11. VIEW 5: IP ROTATION HISTORY RENDERING
     // ==========================================================================
     function renderRotationsView(sessions) {
         const container = document.getElementById("chainsContainer");
@@ -621,7 +769,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // ==========================================================================
-    // 10. CONTROLS & POLLING INITIALIZATION
+    // 12. CONTROLS & POLLING INITIALIZATION
     // ==========================================================================
     const btnRefreshClients = document.getElementById("btnRefreshClients");
     if (btnRefreshClients) {
@@ -639,8 +787,9 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // Initial load
+    // Initial load sequences
     connectLiveStream();
+    loadLogHistory(true);
     fetchState();
 
     // Regular state synchronization every 1.5 seconds

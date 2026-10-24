@@ -25,18 +25,30 @@ from flask import Flask, render_template, jsonify, request, Response
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+ROOT_DIR = os.path.abspath(os.path.join(SRC_DIR, ".."))
+
 SNAPSHOT_LOCATIONS = [
     "/tmp/ps007_state.json",
+    os.path.join(SRC_DIR, "state_snapshot.json"),
+    os.path.join(ROOT_DIR, "src", "state_snapshot.json"),
+    os.path.join(ROOT_DIR, "state_snapshot.json"),
     "state_snapshot.json",
     "src/state_snapshot.json",
+    "../state_snapshot.json",
     "../src/state_snapshot.json"
 ]
 
 EVENTS_LOCATIONS = [
+    os.path.join(SRC_DIR, "events.jsonl"),
+    os.path.join(ROOT_DIR, "src", "events.jsonl"),
+    os.path.join(ROOT_DIR, "events.jsonl"),
+    "/tmp/events.jsonl",
     "events.jsonl",
     "src/events.jsonl",
-    "../src/events.jsonl",
-    "/tmp/events.jsonl"
+    "../events.jsonl",
+    "../src/events.jsonl"
 ]
 
 def load_snapshot() -> dict:
@@ -112,7 +124,14 @@ def sse_stream():
         last_pos = 0
         if os.path.exists(events_path):
             try:
-                last_pos = os.path.getsize(events_path)
+                # Pre-populate stream with recent 50 events upon client connection
+                with open(events_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    last_pos = f.tell()
+                    for line in lines[-50:]:
+                        line = line.strip()
+                        if line:
+                            yield f"data: {line}\n\n"
             except Exception:
                 pass
         while True:
