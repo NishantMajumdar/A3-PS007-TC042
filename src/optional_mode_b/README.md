@@ -12,18 +12,18 @@ It provides an active client-side agent for managed IoT environments where the o
 
 ## Contents of `optional_mode_b/`
 
-1. **[`ratchet.py`](file:///home/nishantm/Documents/network/optional_mode_b/ratchet.py)**:
+1. **`ratchet.py`**:
    - Key Ratchet: $S_{i+1} = \text{SHA256}(S_i)$
-   - Authentication Tag: $\text{HMAC}(S_i, \text{new\_addr} \parallel \text{ctr})$
-   - Replay Protection: Rejection of non-increasing counters ($\text{ctr} \le \text{last\_ctr}$)
+   - Authentication Tag: `HMAC(S_i, new_addr || ctr)`
+   - Replay Protection: Rejection of non-increasing counters (`ctr <= last_ctr`)
 
-2. **[`optional_client_agent.py`](file:///home/nishantm/Documents/network/optional_mode_b/optional_client_agent.py)**:
+2. **`optional_client_agent.py`**:
    - Active Python agent for IoT nodes.
    - Negotiates seed $S_0$ via `AUTH_REQUEST`.
    - Watches kernel RFC 8981 rotations every 3 seconds.
    - Emits `UPDATE_RATCHET` from new addresses.
 
-3. **[`optional_mode_b_server.py`](file:///home/nishantm/Documents/network/optional_mode_b/optional_mode_b_server.py)**:
+3. **`optional_mode_b_server.py`**:
    - Modular UDP server listening on port 9000 when Mode B is explicitly enabled via `--enable-mode-b`.
 
 ---

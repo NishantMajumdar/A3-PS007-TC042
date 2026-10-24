@@ -63,8 +63,17 @@ class TelemetryEmitter:
 
         # 1. Write to JSONL
         with self._lock:
-            with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            try:
+                with open(self.log_path, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
+            if self.log_path != "/tmp/events.jsonl":
+                try:
+                    with open("/tmp/events.jsonl", "a", encoding="utf-8") as f2:
+                        f2.write(line + "\n")
+                except Exception:
+                    pass
 
         # 2. Broadcast to WebSocket clients
         self.broadcast_ws(line)

@@ -100,6 +100,87 @@ if ENABLE_MODE_B:
         port=9000
     )
 
+# --- EMBEDDED SOC WEB DASHBOARD CONFIGURATION ---
+WEB_PORT = int(os.environ.get("WEB_PORT", 5000))
+WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
+ENABLE_WEB = os.environ.get("ENABLE_WEB", "1") != "0" and "--no-web" not in sys.argv
+
+for i, arg in enumerate(sys.argv):
+    if arg in ("--port", "--web-port") and i + 1 < len(sys.argv):
+        try:
+            WEB_PORT = int(sys.argv[i + 1])
+        except ValueError:
+            pass
+
+WEB_URL = f"http://localhost:{WEB_PORT}"
+# OSC 8 Terminal Hyperlink for direct one-click browser launch
+WEB_CLICKABLE_LINK = f"\033]8;;{WEB_URL}\033\\{WEB_URL}\033]8;;\033\\"
+web_proc = None
+web_thread_started = False
+
+def start_web_dashboard():
+    """
+    Packages and launches the integrated Flask SOC web dashboard alongside monitor.py.
+    1. If running inside a child network namespace (e.g. Mininet m1), attempts
+       to spawn the frontend in the root/host network namespace via nsenter so
+       the host browser can access http://localhost:5000 directly.
+    2. Runs the Flask app inside a background daemon thread so it is also
+       accessible on m1's local network interfaces.
+    """
+    global web_proc, web_thread_started
+    if not ENABLE_WEB:
+        return
+
+    # Check if we are inside a Mininet network namespace
+    in_child_netns = False
+    try:
+        if os.path.exists('/proc/1/ns/net') and os.path.exists('/proc/self/ns/net'):
+            in_child_netns = (os.readlink('/proc/1/ns/net') != os.readlink('/proc/self/ns/net'))
+    except Exception:
+        in_child_netns = os.path.exists('/sys/class/net/m1-eth0')
+
+    # If running inside Mininet node namespace as root, spawn on host via nsenter
+    if in_child_netns and os.geteuid() == 0 and shutil.which("nsenter"):
+        frontend_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "app.py")
+        if os.path.exists(frontend_script) and web_proc is None:
+            try:
+                web_proc = subprocess.Popen(
+                    ["nsenter", "-t", "1", "-n", sys.executable, frontend_script, "--host", WEB_HOST, "--port", str(WEB_PORT)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                pass
+
+    # Also start local Flask app daemon thread
+    if not web_thread_started:
+        web_thread_started = True
+        def run_flask_thread():
+            try:
+                import logging
+                log = logging.getLogger('werkzeug')
+                log.setLevel(logging.ERROR)
+                log.disabled = True
+                from frontend.app import app as flask_app
+                flask_app.run(host=WEB_HOST, port=WEB_PORT, debug=False, use_reloader=False)
+            except Exception:
+                pass
+
+        t = Thread(target=run_flask_thread, daemon=True)
+        t.start()
+
+def stop_web_dashboard():
+    global web_proc
+    if web_proc and web_proc.poll() is None:
+        try:
+            web_proc.terminate()
+            web_proc.wait(timeout=1.0)
+        except Exception:
+            try:
+                web_proc.kill()
+            except Exception:
+                pass
+
 
 # --- ACTIVE NETWORK SCANNER (ZERO MAC INSPECTION) ---
 def network_scanner():
@@ -512,17 +593,26 @@ def display_dashboard():
         b5 = C_CYAN + r"    | |  | |\  | |     " + C_RESET + "  " + C_DIM + "VLAN LINK ANCHOR + PASSIVE MIRROR SNIFFING" + C_RESET
         mode_b_str = f"{C_GREEN}ENABLED (UDP:9000){C_RESET}" if ENABLE_MODE_B else f"{C_DIM}DISABLED (OPTIONAL AGENT){C_RESET}"
         b6 = C_CYAN + r"    |_|  |_| \_|_|     " + C_RESET + "  " + C_YEL + "MODE B: " + mode_b_str
+        b7 = " " * 23 + f"  {C_GREEN}🌐 WEB UI (CLICK TO OPEN): {C_BOLD}{C_CYAN}{WEB_CLICKABLE_LINK}{C_RESET}"
 
-        print(f"\n{b1}\n{b2}\n{b3}\n{b4}\n{b5}\n{b6}\n")
+        print(f"\n{b1}\n{b2}\n{b3}\n{b4}\n{b5}\n{b6}\n{b7}\n")
 
         # --- 2. SYSTEM TELEMETRY STRIP ---
         mode_b_badge = f"{C_GREEN}B:ON{C_RESET}" if ENABLE_MODE_B else f"{C_DIM}B:OFF{C_RESET}"
-        t_box = f" INTF: {C_BOLD}m1{C_RESET} │ DEVS: {C_BOLD}{total_devs}{C_RESET} ({C_GREEN}{auth_count} Auth{C_RESET}, {C_RED}{failed_count} Fail{C_RESET}, {C_YEL}{unauth_count} Unauth{C_RESET}) │ ROTS: {C_YEL}{rot_total}x{C_RESET} │ {mode_b_badge} │ WS: {C_GREEN}:8765{C_RESET} │ UP: {C_BOLD}{uptime_str}{C_RESET} "
-        t_vis = f" INTF: m1 │ DEVS: {total_devs} ({auth_count} Auth, {failed_count} Fail, {unauth_count} Unauth) │ ROTS: {rot_total}x │ B:OFF │ WS: :8765 │ UP: {uptime_str} "
+        t_box = f" INTF: {C_BOLD}m1{C_RESET} │ DEVS: {C_BOLD}{total_devs}{C_RESET} ({C_GREEN}{auth_count} Auth{C_RESET}, {C_RED}{failed_count} Fail{C_RESET}, {C_YEL}{unauth_count} Unauth{C_RESET}) │ ROTS: {C_YEL}{rot_total}x{C_RESET} │ {mode_b_badge} │ WEB: {C_CYAN}:{WEB_PORT}{C_RESET} │ UP: {C_BOLD}{uptime_str}{C_RESET} "
+        t_vis = f" INTF: m1 │ DEVS: {total_devs} ({auth_count} Auth, {failed_count} Fail, {unauth_count} Unauth) │ ROTS: {rot_total}x │ B:OFF │ WEB: :{WEB_PORT} │ UP: {uptime_str} "
         pad_t = max(0, W - 2 - len(t_vis))
 
         print("┌" + ("─" * (W - 2)) + "┐")
         print("│" + t_box + (" " * pad_t) + "│")
+        print("└" + ("─" * (W - 2)) + "┘")
+
+        # --- 2b. DEDICATED ONE-CLICK WEB DASHBOARD ACCESS BOX ---
+        web_line = f" 🌐 {C_BOLD}SOC WEB UI:{C_RESET} {C_BOLD}{C_CYAN}{WEB_CLICKABLE_LINK}{C_RESET}  {C_GREEN}[ONLINE]{C_RESET}  {C_DIM}│ Click or Ctrl+Click link to open dashboard{C_RESET} "
+        web_vis = f" 🌐 SOC WEB UI: {WEB_URL}  [ONLINE]  │ Click or Ctrl+Click link to open dashboard "
+        pad_wb = max(0, W - 2 - len(web_vis))
+        print("┌" + ("─" * (W - 2)) + "┐")
+        print("│" + web_line + (" " * pad_wb) + "│")
         print("└" + ("─" * (W - 2)) + "┘")
 
         # --- 3. DYNAMIC NETWORK SCAN TABLE: ALL DISCOVERED DEVICES ---
@@ -679,20 +769,40 @@ def display_dashboard():
 
         # --- 7. FOOTER STATUS ---
         mode_b_desc = "Mode B (Agent): Active (:9000)" if ENABLE_MODE_B else "Mode B (Agent): Disabled (Optional)"
-        print(f"\n {C_DIM}Mode A: Black-Box Tracking (VLAN 4100+Port) │ {mode_b_desc} │ Stream: ws://localhost:8765 │ Press Ctrl+C to Stop{C_RESET}\n")
+        print(f"\n {C_DIM}Mode A: Black-Box Tracking │ {C_CYAN}{WEB_CLICKABLE_LINK}{C_DIM} │ Stream: ws://localhost:8765 │ Press Ctrl+C to Stop{C_RESET}\n")
 
         time.sleep(1)
 
 if __name__ == "__main__":
+    # 1. Start real-time telemetry (WebSocket server on 8765 & JSONL logger)
     telemetry.start()
+
+    # 2. Package and start integrated SOC Web Dashboard
+    start_web_dashboard()
+
+    print(f"\n{C_GREEN}[+] Integrated Web Dashboard LIVE:{C_RESET} {C_BOLD}{C_CYAN}{WEB_CLICKABLE_LINK}{C_RESET}")
+    print(f"    {C_DIM}👉 Click or Ctrl+Click link above to open browser dashboard{C_RESET}\n")
+
+    if "--open" in sys.argv:
+        try:
+            import webbrowser
+            webbrowser.open(WEB_URL)
+        except Exception:
+            pass
+
+    # 3. Start live terminal dashboard display
     Thread(target=display_dashboard, daemon=True).start()
+
     if ENABLE_MODE_B and optional_mode_b_server:
         optional_mode_b_server.start()
+
     Thread(target=network_scanner, daemon=True).start()
+
     try:
         sniff(iface="m1-eth0", filter="ip6", prn=process_packet, store=False)
     except KeyboardInterrupt:
         print(f"\n{C_YEL}[*] Shutting down TNP Monitor...{C_RESET}")
+        stop_web_dashboard()
         if optional_mode_b_server:
             optional_mode_b_server.stop()
         telemetry.stop()

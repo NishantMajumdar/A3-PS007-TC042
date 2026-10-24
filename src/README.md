@@ -106,7 +106,7 @@ cd network/src
 
 ---
 
-### 2.4 Running the System (5-Step Execution Guide)
+### 2.4 Running the System (Execution Guide)
 
 #### Step 1: Start the Mininet Network Emulation
 In your **first terminal**, launch the software-defined network topology:
@@ -127,38 +127,24 @@ sudo python3 ps007_topology.py
 
 ---
 
-#### Step 2: Start the Security Monitor on Node `m1`
-Open a **second terminal** and launch the core monitoring engine inside the `m1` namespace:
+#### Step 2: Start the Security Monitor (with Integrated Web UI)
+Open a **second terminal** and launch the monitoring engine:
 ```bash
 cd network/src
 ./launch_node.sh m1
 ```
-Inside the `m1` namespace prompt, execute:
-```bash
-python3 monitor.py
-```
+*(Or inside node `m1` shell directly: `python3 monitor.py`)*
+
 *What happens:*
-- Monitor promiscuously sniffs mirrored packets on interface `m1-eth0`.
-- Strips and drops all Layer 2 Ethernet MAC addresses at ingress.
-- Tracks RFC 4862 SLAAC Duplicate Address Detection (DAD) packets.
-- Automatically generates HMAC-SHA256 pseudonyms anchored to physical switch ports.
-- Starts the native RFC 6455 WebSocket streaming server on port `8765`.
-- Writes atomic snapshots to `state_snapshot.json` and logs to `events.jsonl`.
-
----
-
-#### Step 3: Launch the SOC Web Dashboard
-Open a **third terminal** and start the Flask web server:
-```bash
-cd network/src
-python3 frontend/app.py --host 0.0.0.0 --port 5000
-```
-*(Or launch it from within node `m1`: `./launch_node.sh m1 "python3 frontend/app.py --host 0.0.0.0 --port 5000"`)*
-
-Now open your browser and navigate to:
-```
-http://localhost:5000
-```
+- **Packaged Web Dashboard:** `monitor.py` automatically packages and launches the SOC Web Dashboard in the background on `http://localhost:5000`.
+- **One-Click Terminal Link:** Displays a direct clickable link in the terminal banner:
+  ```text
+  🌐 WEB UI (CLICK TO OPEN): http://localhost:5000
+  ```
+  Simply click (or Ctrl+Click) `http://localhost:5000` to open the SOC dashboard in your web browser!
+- **Promiscuous Sniffing:** Sniffs mirrored packets on `m1-eth0`, stripping MAC addresses at ingress and tracking RFC 4862 DAD Neighbor Solicitations.
+- **WebSocket Streaming:** Native RFC 6455 server broadcasts telemetry on port `8765`.
+- *(Optional: pass `--open` to auto-launch your browser: `./launch_node.sh m1 "python3 monitor.py --open"`)*
 
 **Explore the 5 Dedicated Sidebar Pages:**
 1. **`1- list clients`:** Live table of all monitored devices with ephemeral pseudonyms, active SLAAC addresses, rotation counts, and link anchors.
@@ -169,8 +155,8 @@ http://localhost:5000
 
 ---
 
-#### Step 4: Generate Normal Traffic & Observe Address Rotations
-In a **fourth terminal**, generate benign IPv6 traffic from one or more client hosts:
+#### Step 3: Generate Normal Traffic & Observe Address Rotations
+In a **third terminal**, generate benign IPv6 traffic from one or more client hosts:
 ```bash
 # Ping Gateway from Client h1
 ./launch_node.sh h1 "ping -6 -c 5 fd00:abcd::1"
@@ -186,7 +172,7 @@ In a **fourth terminal**, generate benign IPv6 traffic from one or more client h
 
 ---
 
-#### Step 5: Simulate Attacks & Observe Real-Time Detection
+#### Step 4: Simulate Attacks & Observe Real-Time Detection
 
 ##### Attack Scenario A: Rogue Router Advertisement Injection
 In a separate terminal, launch a Rogue RA attack from client `h4`:
