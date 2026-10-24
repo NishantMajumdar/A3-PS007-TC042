@@ -128,10 +128,13 @@ sudo python3 ps007_topology.py
 ---
 
 #### Step 2: Start the Security Monitor (with Integrated Web UI)
-Open a **second terminal** and launch the monitoring engine:
+From **within mininet** launch monitor m1:
 ```bash
-cd network/src
-./launch_node.sh m1
+xterm m1
+```
+Then, launch monitor script
+```bash
+python3 monitor.py
 ```
 *(Or inside node `m1` shell directly: `python3 monitor.py`)*
 
@@ -156,13 +159,14 @@ cd network/src
 ---
 
 #### Step 3: Generate Normal Traffic & Observe Address Rotations
-In a **third terminal**, generate benign IPv6 traffic from one or more client hosts:
+From **within mininet** launch shells of clients.
 ```bash
-# Ping Gateway from Client h1
-./launch_node.sh h1 "ping -6 -c 5 fd00:abcd::1"
-
-# Ping Gateway from Client h2
-./launch_node.sh h2 "ping -6 -c 5 fd00:abcd::1"
+xterm h1 h2 h3
+```
+Then
+```
+# Ping Gateway from Client 
+ping -6 -c 5 fd00:abcd::1
 ```
 *What happens:*
 - The clients broadcast RFC 4862 DAD Neighbor Solicitations.
@@ -175,10 +179,19 @@ In a **third terminal**, generate benign IPv6 traffic from one or more client ho
 #### Step 4: Simulate Attacks & Observe Real-Time Detection
 
 ##### Attack Scenario A: Rogue Router Advertisement Injection
-In a separate terminal, launch a Rogue RA attack from client `h4`:
+From **within mininet** launch shells of clients.
 ```bash
-./launch_node.sh h4 "python3 attacks/rogue_ra.py --mode lifetime0"
+xterm h1 h2 h3
 ```
+Then
+```bash
+python3 attacks/rogue_ra.py
+```
+OR
+```bash
+python3 attacks/ndp_flood.py
+```
+
 *Detection Result:*
 - The monitor immediately intercepts the unauthorized RA arriving on client access port 4.
 - `RogueRADetector` triggers `ROGUE_RA_UNAUTHORIZED_SOURCE` (Critical).
@@ -187,12 +200,8 @@ In a separate terminal, launch a Rogue RA attack from client `h4`:
   - Row `SES-PORT04` turns red with a `ROGUE ATTACKER` badge on **`1- list clients`**.
   - A detailed violation record appears under **`3- attack logs`**.
 
-##### Attack Scenario B: Rotating-Source NDP Flood & Network Sweep
-In a separate terminal, launch a rotating-source Neighbor Solicitation flood from client `h3`:
-```bash
-./launch_node.sh h3 "python3 attacks/ndp_flood.py -t NS -r 15.0 --rotate-sec 2.0 --scan"
-```
-*Detection Result:*
+*Detection Result:*  
+
 - The attacker randomizes their source IPv6 address every 2 seconds to evade traditional per-IP rate limiters.
 - Because all packets arrive from physical Port 3, the monitor maps every rotating IP to the **same pseudonym $P$**.
 - `NDPAbuseDetector` token buckets are exhausted, triggering `NDP_RATE_ABUSE_HYSTERESIS` and `NDP_SCAN_CARDINALITY_ALERT` in under 750 milliseconds.
@@ -430,10 +439,10 @@ Pure standard-library telemetry broadcasting engine with zero third-party pip de
 
 ---
 
-### 6.7 `frontend/` - 2016-Era Enterprise Web SOC Dashboard
+### 6.7 `frontend/` - Web SOC Dashboard
 *Directory:* `src/frontend/`
 
-A utilitarian, light-themed SOC dashboard engineered to look like a robust 2016-era enterprise web application (AdminLTE / pfSense style).
+Packaged web dashboard on Flask.
 
 - **5 Dedicated Sidebar Pages:**
   1. **`1- list clients` (`#view-clients`):** Monitored device registry table (Role, Status, Ephemeral Pseudonym, Active SLAAC IPv6, Rotations, Packets, Link Anchor). Gateway `r1` is clearly distinguished. Offending attacker nodes turn crimson red (`row-danger`).
