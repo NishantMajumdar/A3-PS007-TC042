@@ -39,10 +39,11 @@ Furthermore, attackers exploit RFC 8981 address rotation by generating **rotatin
 1. **Zero Hardware MAC Fingerprinting:** All Layer 2 Ethernet source addresses are stripped and dropped immediately upon ingress. No MAC address is ever recorded in RAM, persisted to disk, or broadcast in telemetry.
 2. **Deterministic Link-Anchor Attribution:** OpenFlow 1.3 pushes an 802.1Q VLAN tag (`4100 + in_port`) on mirrored packets. The monitor derives a local session anchor (`SES-PORTxx`) directly from physical switch topology.
 3. **Epoch-Keyed Ephemeral Pseudonyms:** Anchors map to short-lived, un-linkable 8-character pseudonyms:
-   $$P = \text{HMAC-SHA256}(K_{\text{epoch}}, \; \text{tenant\_id} \parallel \text{session\_id})[0:8]$$
+   $$P = \text{HMAC-SHA256}(K_{\text{epoch}}, \; \text{tenant} \parallel \text{session})[0:8]$$
+   *(Implemented as `P = HMAC(K_epoch, tenant || session_id)[:8]`)*
 4. **Passive RFC 4862 DAD Tracking (Primary Mode A):** IoT clients remain 100% black boxes running standard Linux kernel networking. Rotations are captured passively via Duplicate Address Detection Neighbor Solicitations with strict rate bounding.
 5. **Multi-Layer Protocol Anomaly Detection:** Replaces flawed Median Absolute Deviation (MAD) heuristics with RFC 4861 token buckets, $n$-of-$m$ hysteresis, CUSUM drift detection, target cardinality scanning, and RFC 6105 RA-Guard.
-6. **Utilitarian 2016-Era SOC Web Dashboard:** Clean, high-performance monitoring web dashboard running on Flask with dedicated pages for client tracking, 2D topology mapping, attack logs, live stream console, and IP rotation chains.
+6. **Web Dashboard:** Clean, high-performance monitoring web dashboard running on Flask with dedicated pages for client tracking, 2D topology mapping, attack logs, live stream console, and IP rotation chains.
 
 ---
 
@@ -229,7 +230,7 @@ In a separate terminal, launch a rotating-source Neighbor Solicitation flood fro
 | # | System Requirement | Compliance Status | Architectural Implementation & Proof |
 | :-: | :--- | :---: | :--- |
 | **1** | **One IPv6 LAN with 5 emulated devices** | **MET** | Implemented in `ps007_topology.py`. Provisions `fd00:abcd::/64` across Open vSwitch `s1` with 1 Gateway Router (`r1`), 1 Monitor (`m1`), and **5 emulated IoT clients (`h1`–`h5`)**. |
-| **2** | **Short-lived local pseudonyms (no permanent IDs)** | **MET** | Implemented in `pseudonym.py`. Ephemeral HMAC pseudonyms ($P$) rotate every epoch (300s). Old key $K_{\text{epoch}}$ is actively zeroed in RAM. Zero MAC addresses stored. |
+| **2** | **Short-lived local pseudonyms (no permanent IDs)** | **MET** | Implemented in `pseudonym.py`. Ephemeral HMAC pseudonyms ($P$) rotate every epoch (300s). Old key `K_epoch` is actively zeroed in RAM. Zero MAC addresses stored. |
 | **3** | **Authenticated device sessions across address rotations** | **MET** | Implemented in `attribution.py` & `monitor.py`. Sessions anchored to switch ports maintain authenticated status across RFC 8981 SLAAC rotations via passive DAD NS verification. |
 | **4** | **Simulate 2 security attacks (including Rogue RAs)** | **MET** | 1. `attacks/rogue_ra.py` (Rogue RA prefix poisoning & Lifetime=0 DoS).<br>2. `attacks/ndp_flood.py` (Rotating-source NS/NA flood & horizontal target scanning). |
 | **5** | **Detect abnormal Neighbour Discovery message rates** | **MET** | Implemented in `detectors.py` (`NDPAbuseDetector`). RFC 4861 token buckets (NS/NA/RS), $n$-of-$m$ hysteresis, CUSUM drift detection, and distinct-target cardinality sweeps. |
@@ -326,13 +327,13 @@ flowchart TD
 ## 6. Core Engine Modules in Detail
 
 ### 6.1 `ps007_topology.py` - Mininet & OpenFlow 1.3 Tagging
-*File:* [`src/ps007_topology.py`](file:///home/nishantm/Documents/network/src/ps007_topology.py)
+*File:* `src/ps007_topology.py`
 
 Manages the software-defined Mininet network topology.
 - **Switch Flows (OpenFlow 1.3):**
   - Table 0, Priority 1: Default fallback `actions=NORMAL` for standard L2/L3 IPv6 communication.
   - Table 0, Priority 100 (Monitor Ingress): `in_port=m1_port, actions=NORMAL` with `no-flood` flag to avoid traffic reflection loops back to the monitor.
-  - Table 0, Priority 100 (Client/Router Ingress): For all access ports ($in\_p$), pushes an 802.1Q header with $\text{VID} = 4100 + in\_p$ and mirrors directly to monitor `m1`.
+  - Table 0, Priority 100 (Client/Router Ingress): For all access ports (`in_port`), pushes an 802.1Q header with `VID = 4100 + in_port` and mirrors directly to monitor `m1`.
 - **Router Configuration (`r1`):**
   - Assigned `fd00:abcd::1/64` and `fe80::1/64`.
   - Runs `radvd` broadcasting router advertisements every 3–10 seconds.
@@ -346,7 +347,7 @@ Manages the software-defined Mininet network topology.
 ---
 
 ### 6.2 `attribution.py` - Zero-MAC Attribution & DAD Binding
-*File:* [`src/attribution.py`](file:///home/nishantm/Documents/network/src/attribution.py)
+*File:* `src/attribution.py`
 
 The core attribution engine that links rotating addresses back to physical switch anchors without reading MAC addresses.
 - **Ingress MAC Dropping:** `process_raw_scapy_packet` extracts `Dot1Q.vlan`, immediately disregards `Ether.src`, and evaluates network layer payloads.
@@ -360,12 +361,13 @@ The core attribution engine that links rotating addresses back to physical switc
 ---
 
 ### 6.3 `pseudonym.py` - Epoch-Keyed Pseudonyms & Forward Secrecy
-*File:* [`src/pseudonym.py`](file:///home/nishantm/Documents/network/src/pseudonym.py)
+*File:* `src/pseudonym.py`
 
 Maintains isolated multi-tenant session stores, epoch keys, and cryptographic memory erasure.
 - **Pseudonym Derivation Formula:**
-  $$P = \text{HMAC-SHA256}(K_{\text{epoch}}, \; \text{tenant\_id} \parallel \text{session\_id})[0:8]$$
-- **Cryptographic Memory Erasure:** $K_{\text{epoch}}$ is stored in a mutable Python `bytearray(32)`. When `rotate_epoch()` is called, the old key is actively overwritten with binary zeroes in RAM before generating a fresh key:
+  $$P = \text{HMAC-SHA256}(K_{\text{epoch}}, \; \text{tenant} \parallel \text{session})[0:8]$$
+  *(Implemented as `P = HMAC(K_epoch, tenant || session_id)[:8]`)*
+- **Cryptographic Memory Erasure:** `K_epoch` is stored in a mutable Python `bytearray(32)`. When `rotate_epoch()` is called, the old key is actively overwritten with binary zeroes in RAM before generating a fresh key:
   ```python
   for i in range(len(self._k_epoch)):
       self._k_epoch[i] = 0
@@ -401,16 +403,16 @@ flowchart LR
 ---
 
 ### 6.4 `detectors.py` - RA-Guard & Multi-Layer NDP Abuse Engine
-*File:* [`src/detectors.py`](file:///home/nishantm/Documents/network/src/detectors.py)
+*File:* `src/detectors.py`
 
 Contains the stateless and stateful anomaly detection engines.
 
 #### 1. `RogueRADetector` (RFC 6105 RA-Guard)
-- **Port 1 Exclusive Authorization:** Only physical Port 1 (VLAN 4101 or wire VID 5) is authorized to transmit ICMPv6 Router Advertisements. Any RA originating from ports $\ge 2$ triggers `ROGUE_RA_UNAUTHORIZED_SOURCE` (Severity: CRITICAL).
+- **Port 1 Exclusive Authorization:** Only physical Port 1 (VLAN 4101 or wire VID 5) is authorized to transmit ICMPv6 Router Advertisements. Any RA originating from ports >= 2 triggers `ROGUE_RA_UNAUTHORIZED_SOURCE` (Severity: CRITICAL).
 - **Prefix Guard:** Advertised prefixes must match `fd00:abcd::/64`. Divergent prefixes trigger `ROGUE_RA_UNEXPECTED_PREFIX`.
 - **Lifetime=0 DoS Detection:** Flags RAs advertising `router_lifetime == 0` (used by attackers to flush default routing tables).
-- **Burst Detection:** Flags $> 3$ RAs transmitted within a 1.0-second sliding window (`ROGUE_RA_BURST`).
-- **Parameter Inconsistency:** Flags anomalies in Cur Hop Limit ($\neq 64$).
+- **Burst Detection:** Flags > 3 RAs transmitted within a 1.0-second sliding window (`ROGUE_RA_BURST`).
+- **Parameter Inconsistency:** Flags anomalies in Cur Hop Limit (!= 64).
 
 #### 2. `NDPAbuseDetector` (Neighbor Discovery Protocol Protection)
 Keyed per pseudonym ($P$) rather than per IP:
@@ -419,32 +421,21 @@ Keyed per pseudonym ($P$) rather than per IP:
   - Neighbor Advertisement (NA): Capacity = 6.0, refill rate = 2.0 tokens/s.
   - Router Solicitation (RS): Capacity = 4.0, refill rate = 0.5 tokens/s (`MAX_RTR_SOLICITATIONS = 3`, `RTR_SOLICITATION_INTERVAL = 4s`).
 - **Layer 2: $n$-of-$m$ Hysteresis Window:**
-  Tracks token bucket breaches over a sliding window of the last $m = 5$ packets. If $n \ge 3$ violations occur, triggers `NDP_RATE_ABUSE_HYSTERESIS` (Severity: HIGH).
+  Tracks token bucket breaches over a sliding window of the last $m = 5$ packets. If n >= 3 violations occur, triggers `NDP_RATE_ABUSE_HYSTERESIS` (Severity: HIGH).
 - **Layer 3: CUSUM (Cumulative Sum Control Chart) Drift:**
   Catches stealthy, slow-rate floods that stay just below the token bucket refill rate:
   $$S_k = \max(0, S_{k-1} + X_k - \mu - K)$$
-  Triggers `NDP_CUSUM_DRIFT_ALERT` when $S_k \ge 6.0$.
+  Triggers `NDP_CUSUM_DRIFT_ALERT` when S_k >= 6.0.
 - **Layer 4: Target Cardinality Sweeps (Reconnaissance Scanner):**
-  Tracks distinct target IPv6 addresses queried in NS packets over a sliding 10-second window. Soliciting $> 4$ distinct targets triggers `NDP_SCAN_CARDINALITY_ALERT` (Severity: HIGH).
+  Tracks distinct target IPv6 addresses queried in NS packets over a sliding 10-second window. Soliciting > 4 distinct targets triggers `NDP_SCAN_CARDINALITY_ALERT` (Severity: HIGH).
 - **State Purge on Expiry:** When a pseudonym expires or an epoch rotates, all associated token buckets and tracking queues are purged via `delete_pseudonym_state(p)`.
 
 ---
 
-### 6.5 `optional_mode_b/ratchet.py` - Active Cryptographic Ratchet
-*File:* [`src/optional_mode_b/ratchet.py`](file:///home/nishantm/Documents/network/src/optional_mode_b/ratchet.py)
 
-Strictly optional cryptographic hash ratchet utilized only when active client agents are explicitly enabled via `--enable-mode-b`.
-- **One-Way Hash Chain:**
-  $$S_{i+1} = \text{SHA-256}(S_i)$$
-- **HMAC Authentication Tag:**
-  $$\text{Tag} = \text{HMAC-SHA256}(S_i, \; \text{new\_addr} \parallel \text{str}(\text{counter}))$$
-- **Monotonic Replay Protection:** Rejects any rotation packet where $\text{counter} \le \text{last\_counter}$.
-- **Timing-Safe Verification:** Uses `hmac.compare_digest` to prevent side-channel timing attacks.
-
----
 
 ### 6.6 `telemetry.py` - Native RFC 6455 WebSocket & Streaming
-*File:* [`src/telemetry.py`](file:///home/nishantm/Documents/network/src/telemetry.py)
+*File:* `src/telemetry.py`
 
 Pure standard-library telemetry broadcasting engine with zero third-party pip dependencies.
 - **Native RFC 6455 Server:** Implements standard WebSocket framing, Sec-WebSocket-Key SHA-1 handshakes, and unmasked text frame encoding directly over raw TCP sockets on port `8765`.
@@ -454,14 +445,10 @@ Pure standard-library telemetry broadcasting engine with zero third-party pip de
 ---
 
 ### 6.7 `frontend/` - 2016-Era Enterprise Web SOC Dashboard
-*Directory:* [`src/frontend/`](file:///home/nishantm/Documents/network/src/frontend/)
+*Directory:* `src/frontend/`
 
 A utilitarian, light-themed SOC dashboard engineered to look like a robust 2016-era enterprise web application (AdminLTE / pfSense style).
-- **Design Philosophy:**
-  - Background strictly pure white (`#ffffff`).
-  - Accent color strictly `#2d2f4d` (deep slate navy).
-  - Strict 0px border radius (`border-radius: 0 !important;` globally applied).
-  - Zero gradients, zero mouse animations, and zero framework bloat (Pure Vanilla JS).
+
 - **5 Dedicated Sidebar Pages:**
   1. **`1- list clients` (`#view-clients`):** Monitored device registry table (Role, Status, Ephemeral Pseudonym, Active SLAAC IPv6, Rotations, Packets, Link Anchor). Gateway `r1` is clearly distinguished. Offending attacker nodes turn crimson red (`row-danger`).
   2. **`2- network map` (`#view-map`):** Dynamic 2D HTML5 Canvas visualizer rendering Gateway (`r1`), Switch (`s1`), Monitor (`m1`), and active client pseudonyms. Attacking nodes turn solid red (`#c62828`).
@@ -474,7 +461,7 @@ A utilitarian, light-themed SOC dashboard engineered to look like a robust 2016-
 ## 7. Adversary Models & Attack Scenarios
 
 ### Attack 1: Rogue Router Advertisement Injection
-*Script:* [`src/attacks/rogue_ra.py`](file:///home/nishantm/Documents/network/src/attacks/rogue_ra.py)
+*Script:* `src/attacks/rogue_ra.py`
 * **Threat Model:** An attacker on a compromised client access port attempts to hijack default routing, conduct a Man-in-the-Middle (MitM) attack, or perform a Denial of Service (DoS) by injecting unauthorized RAs.
 * **Execution Options:**
   - `--mode unauthorized`: Injects RAs from an unapproved router source or access port.
@@ -483,7 +470,7 @@ A utilitarian, light-themed SOC dashboard engineered to look like a robust 2016-
 * **Detection:** Captured by `RogueRADetector` (RFC 6105 RA-Guard). The offending port is flagged as `ROGUE ATTACKER` and highlighted red on the dashboard.
 
 ### Attack 2: Rotating-Source NDP Flood & Target Sweeping
-*Script:* [`src/attacks/ndp_flood.py`](file:///home/nishantm/Documents/network/src/attacks/ndp_flood.py)
+*Script:* `src/attacks/ndp_flood.py`
 * **Threat Model:** An attacker generates high-rate Neighbor Solicitation (NS) or Neighbor Advertisement (NA) floods. To evade traditional per-IP rate limiters, the attacker randomizes their source IPv6 address every 2 seconds.
 * **Execution Options:**
   - `-t NS` or `-t NA`: Selects the NDP message type to flood.
