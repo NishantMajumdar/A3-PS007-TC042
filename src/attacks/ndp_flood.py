@@ -19,7 +19,7 @@ def random_ipv6_addr(prefix: str = "fd00:abcd::") -> str:
     return f"{prefix}{rand_suffix}"
 
 def launch_ndp_flood(
-    iface: str = "h3-eth0",
+    iface: str = [i for i in __import__('os').listdir('/sys/class/net/') if i != 'lo'][0],
     ndp_type: str = "NS",
     total_packets: int = 50,
     rate_pps: float = 10.0,
