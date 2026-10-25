@@ -16,7 +16,7 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import send, IPv6, ICMPv6ND_RA, ICMPv6NDOptPrefixInfo
 
 def launch_rogue_ra(
-    iface: str = "h2-eth0",
+    iface: str = [i for i in __import__('os').listdir('/sys/class/net/') if i != 'lo'][0],
     mode: str = "unauthorized",
     count: int = 1,
     interval: float = 1.0,
