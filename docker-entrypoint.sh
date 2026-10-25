@@ -16,7 +16,7 @@ export DISPLAY="${DISPLAY:-:0}"
 
 echo "=================================================================="
 echo "  PS-007: Privacy-Aware IPv6 IoT Security Monitor"
-echo "  Containerized SDN + Zero-MAC NIDS + Utilitarian SOC Dashboard"
+echo "  Containerized SDN + Zero-MAC NIDS + Utdocker push nishantmajumdar/ps007-ipv6-monitor:latestilitarian SOC Dashboard"
 echo "=================================================================="
 
 # 1. Start Open vSwitch service inside container

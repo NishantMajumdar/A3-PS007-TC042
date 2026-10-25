@@ -2,7 +2,7 @@
 r"""
 ==============================================================================
   _______ _   _ _____  
- |__   __| \ | |  __ \   TNP CYBERSECURITY RESEARCH LABS
+ |__   __| \ | |  __ \   The Network Project
     | |  |  \| | |__) |  IPv6 IoT FLEET MONITOR [PS-007]
     | |  | . ` |  ___/   RFC 8981 ROTATION-RESISTANT TRACKER
     | |  | |\  | |       MAC TRACKING: DISABLED (COMPLIANT)
@@ -587,7 +587,7 @@ def display_dashboard():
 
         # --- 1. TNP ASCII HEADER (100% UNIVERSAL ASCII) ---
         b1 = C_CYAN + r"  _______ _   _ _____  " + C_RESET
-        b2 = C_CYAN + r" |__   __| \ | |  __ \ " + C_RESET + "  " + C_BOLD + "TNP CYBERSECURITY RESEARCH LABS" + C_RESET
+        b2 = C_CYAN + r" |__   __| \ | |  __ \ " + C_RESET + "  " + C_BOLD + "The Network Project" + C_RESET
         b3 = C_CYAN + r"    | |  |  \| | |__) |" + C_RESET + "  " + C_CYAN + "IPv6 IoT FLEET MONITOR [PS-007]" + C_RESET
         b4 = C_CYAN + r"    | |  | . ` |  ___/ " + C_RESET + "  " + C_GREEN + "[OK] MODE A: BLACK-BOX TRACKING (MAIN / ZERO-AGENT)" + C_RESET
         b5 = C_CYAN + r"    | |  | |\  | |     " + C_RESET + "  " + C_DIM + "VLAN LINK ANCHOR + PASSIVE MIRROR SNIFFING" + C_RESET

