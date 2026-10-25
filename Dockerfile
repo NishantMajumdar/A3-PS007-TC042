@@ -23,13 +23,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xterm \
     x11-xserver-utils \
     xauth \
+    iputils-ping \
+    traceroute \
+    tcpdump \
+    ndisc6 \
+    nano \
+    less \
+    socat \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy all project code
+# Invalidate cache for code copy so new changes are always included
+ARG CACHEBUST=1
 COPY . /app
 
 # Grant execution rights to entrypoint script
