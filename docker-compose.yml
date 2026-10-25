@@ -1,10 +1,11 @@
 services:
   ps007-monitor:
     build: .
-    image: ps007-ipv6-monitor:latest
+    image: nishantmajumdar/ps007-ipv6-monitor:latest
     pull_policy: build
     container_name: ps007_evaluator
     privileged: true
+    ipc: host
     environment:
       - DISPLAY=${DISPLAY:-:0}
     volumes:

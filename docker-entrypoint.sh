@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -e
 
-# Ensure DISPLAY is set for Mininet X11 terminal spawning
+# Auto-detect valid X11 socket if DISPLAY is unset or invalid
+if [ -n "$DISPLAY" ] && [ -S "/tmp/.X11-unix/X${DISPLAY#*:}" ]; then
+    export DISPLAY="$DISPLAY"
+else
+    for sock in /tmp/.X11-unix/X*; do
+        if [ -S "$sock" ]; then
+            export DISPLAY=":${sock##*/X}"
+            break
+        fi
+    done
+fi
 export DISPLAY="${DISPLAY:-:0}"
 
 echo "=================================================================="

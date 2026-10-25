@@ -54,7 +54,23 @@ Furthermore, attackers exploit RFC 8981 address rotation by generating **rotatin
 The complete SDN emulation, Open vSwitch daemon, zero-MAC sniffer engine, and Web SOC Dashboard are published on Docker Hub:  
 👉 **Docker Repository:** [hub.docker.com/r/nishantmajumdar/ps007-ipv6-monitor](https://hub.docker.com/r/nishantmajumdar/ps007-ipv6-monitor)
 
-No manual package installation (`apt`, `pacman`, or compilation) is required. Run `xhost +local:root` once on your host (to allow GUI XTerm windows), then start the container:
+### Host Prerequisite (Required for XTerm GUI Windows)
+The host system must have the `xhost` utility installed so Docker can display GUI XTerm windows on your desktop. If `xhost` is not installed, the first command will fail and XTerm windows inside Mininet will not open:
+
+- **Ubuntu / Debian:**
+  ```bash
+  sudo apt update
+  sudo apt install -y x11-xserver-utils
+  ```
+- **Arch Linux / CachyOS:**
+  ```bash
+  sudo pacman -S --needed xorg-xhost
+  ```
+
+---
+
+### Run the Container
+Execute the following commands on your host terminal:
 
 ```bash
 # 1. Allow container to display GUI xterm windows on host
