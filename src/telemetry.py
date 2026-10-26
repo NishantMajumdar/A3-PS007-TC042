@@ -5,7 +5,7 @@ telemetry.py - PS-007 Structured Event Logger, WebSocket Broadcaster, and Replay
 Features:
   1. Emits structured JSONL events (rotation, bind, alert, expiry).
   2. Pure standard-library RFC 6455 WebSocket server (zero external dependencies).
-  3. Replay engine capable of streaming historical events from saved JSONL files.
+  3. Replay engine capable of streaming historical events from saved JSONL files. event logging
 """
 
 import os
