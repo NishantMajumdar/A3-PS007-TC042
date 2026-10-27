@@ -28,7 +28,8 @@ In traditional Network Intrusion Detection Systems (NIDS), operators track rotat
    When epochs rotate (every 300s), old keys are actively overwritten with zeroes in RAM for forward secrecy.
 4. **Passive RFC 4862 DAD Tracking (Primary Mode A):** IoT clients remain 100% black boxes running standard Linux kernel networking. Rotations are captured passively via Duplicate Address Detection Neighbor Solicitations with strict rate bounding.
 5. **Multi-Layer Protocol Anomaly Detection:** Replaces flawed Median Absolute Deviation (MAD) heuristics with RFC 4861 token buckets, $n$-of-$m$ hysteresis, CUSUM drift detection, target cardinality scanning, and RFC 6105 RA-Guard.
-6. **Integrated Web SOC Dashboard:** Clean monitoring web dashboard running on Flask, packaged directly into `monitor.py` on `http://localhost:5000` with dedicated pages for client tracking, 2D topology mapping, attack logs, live stream console, and IP rotation chains.
+6. **Active SDN Defense & Port Auto-Quarantine:** When an attacker is proven (Rogue RA injection or rotating NDP flood), the monitor triggers OpenFlow 1.3 mitigation on switch `s1` (`table=0,priority=65000,in_port={port},actions=drop`), immediately severing the offending port from the network at wire speed.
+7. **Integrated Web SOC Dashboard:** Clean monitoring web dashboard running on Flask, packaged directly into `monitor.py` on `http://localhost:5000` with dedicated pages for client tracking, 2D topology mapping, attack logs, live stream console, and IP rotation chains.
 
 For complete architectural specifications, module descriptions, and formal security guarantees, see [`src/README.md`](src/README.md).
 

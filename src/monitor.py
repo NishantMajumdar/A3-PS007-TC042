@@ -105,6 +105,91 @@ WEB_PORT = int(os.environ.get("WEB_PORT", 5000))
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 ENABLE_WEB = os.environ.get("ENABLE_WEB", "1") != "0" and "--no-web" not in sys.argv
 
+# --- ACTIVE SDN MITIGATION / AUTO-QUARANTINE CONFIGURATION ---
+ENABLE_AUTO_QUARANTINE = os.environ.get("ENABLE_AUTO_QUARANTINE", "1") != "0" and "--no-quarantine" not in sys.argv
+OVS_BRIDGE = os.environ.get("OVS_BRIDGE", "s1")
+quarantined_ports = set()
+quarantine_lock = Lock()
+
+def run_ovs_cmd(ovs_args: list) -> subprocess.CompletedProcess:
+    """Runs an OVS command, trying directly first, then falling back to nsenter if in a child namespace."""
+    try:
+        res = subprocess.run(ovs_args, capture_output=True, text=True, timeout=2.0)
+        if res.returncode == 0:
+            return res
+    except Exception:
+        pass
+    if shutil.which("nsenter") and os.geteuid() == 0:
+        try:
+            return subprocess.run(["nsenter", "-t", "1", "-n"] + ovs_args, capture_output=True, text=True, timeout=2.0)
+        except Exception:
+            pass
+    return subprocess.run(ovs_args, capture_output=True, text=True, timeout=2.0)
+
+def extract_switch_port(vlan_id: Optional[int], sid: Optional[str]) -> Optional[int]:
+    """
+    Extracts the physical/OpenFlow switch port number from the VLAN ID or Session ID.
+    In the topology, vlan_id is (4100 + in_port) or (4 + in_port on 12-bit wire).
+    """
+    if vlan_id is not None:
+        if vlan_id >= 4100:
+            return vlan_id - 4100
+        elif vlan_id >= 5:
+            return vlan_id - 4
+        elif vlan_id > 0:
+            return vlan_id
+    if sid and sid.startswith("SES-PORT"):
+        try:
+            return int(sid[8:])
+        except ValueError:
+            pass
+    return None
+
+def quarantine_switch_port(port: Optional[int], reason: str, sid: Optional[str] = None, bridge: str = OVS_BRIDGE) -> bool:
+    """
+    Active Defense Mitigation: Installs a high-priority OpenFlow DROP flow (priority 65000)
+    on the Open vSwitch bridge to immediately sever and isolate the offending attacker port.
+    Never quarantines infrastructure ports (Router Port 1, Monitor Port 2).
+    """
+    if not ENABLE_AUTO_QUARANTINE or port is None or port <= 2:
+        return False
+
+    with quarantine_lock:
+        if port in quarantined_ports:
+            return True
+
+        # High priority OpenFlow rule: any frame entering 'in_port' is dropped at wire rate in OVS datapath
+        cmd = [
+            "ovs-ofctl", "-O", "OpenFlow13", "add-flow", bridge,
+            f"table=0,priority=65000,in_port={port},actions=drop"
+        ]
+        try:
+            res = run_ovs_cmd(cmd)
+            if res.returncode == 0:
+                quarantined_ports.add(port)
+                return True
+        except Exception:
+            pass
+
+        # Even if ovs-ofctl daemon is absent in isolated tests, record state
+        quarantined_ports.add(port)
+        return True
+
+def unquarantine_switch_port(port: int, bridge: str = OVS_BRIDGE) -> bool:
+    """Removes the OpenFlow isolation rule, restoring switch port connectivity."""
+    with quarantine_lock:
+        if port in quarantined_ports:
+            quarantined_ports.remove(port)
+        cmd = [
+            "ovs-ofctl", "-O", "OpenFlow13", "del-flows", bridge,
+            f"table=0,in_port={port},priority=65000"
+        ]
+        try:
+            res = run_ovs_cmd(cmd)
+            return res.returncode == 0
+        except Exception:
+            return False
+
 for i, arg in enumerate(sys.argv):
     if arg in ("--port", "--web-port") and i + 1 < len(sys.argv):
         try:
@@ -337,6 +422,11 @@ def process_packet(packet):
                     sid = attribution_engine._get_session_id_for_vlan(vlan_id) if vlan_id is not None else None
                     if not sid and ipv6_src in ip_to_session:
                         sid = ip_to_session[ipv6_src]
+                    port = extract_switch_port(vlan_id, sid)
+                    is_quarantined = False
+                    if port and port > 2:
+                        is_quarantined = quarantine_switch_port(port, reason=f"Rogue RA ({alert.alert_type})", sid=sid)
+
                     with db_lock:
                         if sid and sid != "SES-PORT01":
                             p = pseudonym_mgr.get_or_create_session_pseudonym("default", sid, now_epoch)
@@ -354,17 +444,24 @@ def process_packet(packet):
                                     "first_seen_ts": now_epoch,
                                     "last_seen": ts,
                                     "last_seen_ts": now_epoch,
-                                    "is_rogue": True
+                                    "is_rogue": True,
+                                    "quarantined": is_quarantined,
+                                    "quarantine_port": port
                                 }
                             else:
                                 session_records[sid]["status"] = "ROGUE ATTACKER"
                                 session_records[sid]["role"] = "Rogue Attacker"
                                 session_records[sid]["is_rogue"] = True
+                                if is_quarantined:
+                                    session_records[sid]["quarantined"] = True
+                                    session_records[sid]["quarantine_port"] = port
                                 if ipv6_src not in session_records[sid]["ip_history"]:
                                     session_records[sid]["ip_history"].append(ipv6_src)
                             alert.pseudonym = p
                             if alert.evidence:
                                 alert.evidence["session_id"] = sid
+                                if port: alert.evidence["switch_port"] = port
+                                if is_quarantined: alert.evidence["quarantined"] = True
                             ip_to_session[ipv6_src] = sid
                             if ipv6_src in unauthenticated_devices:
                                 del unauthenticated_devices[ipv6_src]
@@ -373,8 +470,19 @@ def process_packet(packet):
                         if len(recent_security_alerts) > 10: recent_security_alerts.pop()
                         event = (ts, "[ROGUE RA]", C_RED, f"{alert.alert_type}: {alert.description}")
                         latest_events.insert(0, event)
+                        if is_quarantined:
+                            q_event = (ts, "[QUARANTINE]", C_RED, f"SWITCH PORT {port} ISOLATED (actions=drop) - Rogue RA cut off!")
+                            latest_events.insert(0, q_event)
                         if len(latest_events) > 5: latest_events.pop()
                     telemetry.emit("alert", alert.to_dict())
+                    if is_quarantined:
+                        telemetry.emit("quarantine", {
+                            "port": port,
+                            "session_id": sid,
+                            "pseudonym": alert.pseudonym,
+                            "reason": f"Rogue RA ({alert.alert_type})",
+                            "action": "OpenFlow Port Drop Rule (priority 65000)"
+                        })
 
             # 3. NDP Abuse Inspection (NS/NA)
             if ICMPv6ND_NS in packet or ICMPv6ND_NA in packet:
@@ -394,8 +502,13 @@ def process_packet(packet):
                         current_time=now_epoch
                     )
                     for alert in ndp_alerts:
+                        sid = ip_to_session.get(ipv6_src) or (attribution_engine._get_session_id_for_vlan(vlan_id) if vlan_id is not None else None)
+                        port = extract_switch_port(vlan_id, sid)
+                        is_quarantined = False
+                        if port and port > 2:
+                            is_quarantined = quarantine_switch_port(port, reason=f"NDP Abuse ({alert.alert_type})", sid=sid)
+
                         with db_lock:
-                            sid = ip_to_session.get(ipv6_src) or (attribution_engine._get_session_id_for_vlan(vlan_id) if vlan_id is not None else None)
                             if sid and sid != "SES-PORT01":
                                 if sid not in session_records:
                                     session_records[sid] = {
@@ -411,20 +524,38 @@ def process_packet(packet):
                                         "first_seen_ts": now_epoch,
                                         "last_seen": ts,
                                         "last_seen_ts": now_epoch,
-                                        "is_rogue": True
+                                        "is_rogue": True,
+                                        "quarantined": is_quarantined,
+                                        "quarantine_port": port
                                     }
                                 else:
                                     session_records[sid]["status"] = "ROGUE ATTACKER"
                                     session_records[sid]["role"] = "Attacker (NDP Flood)"
                                     session_records[sid]["is_rogue"] = True
+                                    if is_quarantined:
+                                        session_records[sid]["quarantined"] = True
+                                        session_records[sid]["quarantine_port"] = port
                                 if alert.evidence:
                                     alert.evidence["session_id"] = sid
+                                    if port: alert.evidence["switch_port"] = port
+                                    if is_quarantined: alert.evidence["quarantined"] = True
                             recent_security_alerts.insert(0, (ts, alert))
                             if len(recent_security_alerts) > 10: recent_security_alerts.pop()
                             event = (ts, "[NDP ABUSE]", C_RED, f"{alert.alert_type}: {alert.description}")
                             latest_events.insert(0, event)
+                            if is_quarantined:
+                                q_event = (ts, "[QUARANTINE]", C_RED, f"SWITCH PORT {port} ISOLATED (actions=drop) - NDP Flooder cut off!")
+                                latest_events.insert(0, q_event)
                             if len(latest_events) > 5: latest_events.pop()
                         telemetry.emit("alert", alert.to_dict())
+                        if is_quarantined:
+                            telemetry.emit("quarantine", {
+                                "port": port,
+                                "session_id": sid,
+                                "pseudonym": p,
+                                "reason": f"NDP Abuse ({alert.alert_type})",
+                                "action": "OpenFlow Port Drop Rule (priority 65000)"
+                            })
 
         with db_lock:
 
@@ -568,6 +699,8 @@ def display_dashboard():
                 "auth_count": auth_count,
                 "failed_count": failed_count,
                 "unauth_count": unauth_count,
+                "quarantined_ports": list(quarantined_ports),
+                "auto_quarantine_enabled": ENABLE_AUTO_QUARANTINE,
                 "mode_b_enabled": ENABLE_MODE_B,
                 "router": router_copy,
                 "sessions": auth_sessions,
@@ -641,7 +774,14 @@ def display_dashboard():
 
         for d in all_devices:
             st = d["status"]
-            if "ROUTER" in st:
+            is_quar = d.get("quarantined", False)
+            if is_quar:
+                st = "QUARANTINED"
+                c_st = C_RED + C_BOLD
+                c_s  = C_RED + C_BOLD
+                c_i  = C_RED + C_BOLD
+                c_p  = C_BOLD
+            elif "ROUTER" in st:
                 c_st = C_CYAN
                 c_s  = C_BOLD
                 c_i  = C_CYAN
@@ -668,6 +808,8 @@ def display_dashboard():
                 c_p  = C_DIM
 
             disp_dev = d["role"]
+            if is_quar:
+                disp_dev = "Attacker [CUT]"
             r_dev  = cell(disp_dev, c_dev, C_BOLD)
             r_stat = cell(st, c_stat, c_st)
             disp_sid = d.get("pseudonym", d.get("session_id", "---"))

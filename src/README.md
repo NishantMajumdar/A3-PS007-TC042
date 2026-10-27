@@ -507,7 +507,7 @@ Packaged web dashboard on Flask.
   - `--mode unauthorized`: Injects RAs from an unapproved router source or access port.
   - `--mode lifetime0`: Injects RAs with `Router Lifetime = 0`, forcing victim nodes to immediately flush default routes.
   - `--mode burst`: Transmits a rapid burst of RAs to overwhelm network queues.
-* **Detection:** Captured by `RogueRADetector` (RFC 6105 RA-Guard). The offending port is flagged as `ROGUE ATTACKER` and highlighted red on the dashboard.
+* **Detection & Auto-Mitigation:** Captured by `RogueRADetector` (RFC 6105 RA-Guard). The offending port is flagged as `ROGUE ATTACKER`, highlighted red on the dashboard, and automatically quarantined at the switch via an OpenFlow 1.3 drop rule (`table=0,priority=65000,in_port={port},actions=drop`), immediately severing the rogue attacker from the network.
 
 ### Attack 2: Rotating-Source NDP Flood & Target Sweeping
 *Script:* `src/attacks/ndp_flood.py`
@@ -517,7 +517,7 @@ Packaged web dashboard on Flask.
   - `-r 15.0`: Transmits at 15 packets per second.
   - `--rotate-sec 2.0`: Rotates source IPv6 address every 2 seconds.
   - `--scan`: Randomizes target IPv6 addresses to simulate horizontal reconnaissance.
-* **Detection:** Captured by `NDPAbuseDetector`. Because packets arrive from the same physical link anchor, all rotating IPs map to the **same pseudonym $P$**, exhausting the token bucket and triggering `NDP_RATE_ABUSE_HYSTERESIS` and `NDP_SCAN_CARDINALITY_ALERT`.
+* **Detection & Auto-Mitigation:** Captured by `NDPAbuseDetector`. Because packets arrive from the same physical link anchor, all rotating IPs map to the **same pseudonym $P$**, exhausting the token bucket and triggering `NDP_RATE_ABUSE_HYSTERESIS` and `NDP_SCAN_CARDINALITY_ALERT`. The monitor automatically installs an OpenFlow drop rule on `s1`, isolating the attacker port at wire rate.
 
 ---
 

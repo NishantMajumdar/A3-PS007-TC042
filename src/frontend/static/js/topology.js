@@ -134,7 +134,24 @@ class NetworkTopologyVisualizer {
             activeIds.add(sid);
 
             const isRogue = s.is_rogue || (s.status && s.status.includes("ROGUE"));
+            const isQuarantined = Boolean(s.quarantined);
             const pseudo = s.pseudonym || sid;
+
+            let nodeColor = "#2e7d32";
+            let borderColor = "#1b5e20";
+            let nodeLabel = `P: ${pseudo}`;
+
+            if (isQuarantined) {
+                nodeColor = "#b91c1c";
+                borderColor = "#450a0a";
+                nodeLabel = `CUT OFF: ${pseudo}`;
+            } else if (isRogue) {
+                nodeColor = "#c62828";
+                borderColor = "#7f1d1d";
+            } else if (s.status === "IDLE") {
+                nodeColor = "#d97706";
+                borderColor = "#b45309";
+            }
 
             if (!this.clientNodes[sid]) {
                 // New device discovered via DAD
@@ -143,15 +160,16 @@ class NetworkTopologyVisualizer {
                     sessionId: sid,
                     pseudonym: pseudo,
                     shortCode: pseudo.substring(0, 4),
-                    label: `P: ${pseudo}`,
+                    label: nodeLabel,
                     ip: s.active_ip || "Tentative",
-                    status: s.status || "ACTIVE",
+                    status: isQuarantined ? "QUARANTINED" : (s.status || "ACTIVE"),
                     rotations: s.rotations || 0,
                     pkts: s.pkts || 0,
-                    role: s.role || "IoT Device",
+                    role: isQuarantined ? "Attacker (Cut Off)" : (s.role || "IoT Device"),
                     isRogue: isRogue,
-                    color: isRogue ? "#c62828" : "#2e7d32",
-                    borderColor: isRogue ? "#7f1d1d" : "#1b5e20",
+                    quarantined: isQuarantined,
+                    color: nodeColor,
+                    borderColor: borderColor,
                     radius: 17
                 };
             } else {
@@ -159,14 +177,15 @@ class NetworkTopologyVisualizer {
                 const node = this.clientNodes[sid];
                 node.pseudonym = pseudo;
                 node.shortCode = pseudo.substring(0, 4);
-                node.label = `P: ${pseudo}`;
+                node.label = nodeLabel;
                 node.ip = s.active_ip || node.ip;
-                node.status = s.status || node.status;
+                node.status = isQuarantined ? "QUARANTINED" : (s.status || node.status);
                 node.rotations = s.rotations !== undefined ? s.rotations : node.rotations;
                 node.pkts = s.pkts !== undefined ? s.pkts : node.pkts;
                 node.isRogue = isRogue;
-                node.color = isRogue ? "#c62828" : (node.status === "IDLE" ? "#d97706" : "#2e7d32");
-                node.borderColor = isRogue ? "#7f1d1d" : (node.status === "IDLE" ? "#b45309" : "#1b5e20");
+                node.quarantined = isQuarantined;
+                node.color = nodeColor;
+                node.borderColor = borderColor;
             }
         }
 

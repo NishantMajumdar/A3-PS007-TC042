@@ -508,7 +508,12 @@ document.addEventListener("DOMContentLoaded", () => {
             let roleBadge = '<span class="badge badge-accent">IoT Device</span>';
             let pseudoColor = "var(--text-main)";
 
-            if (isRogue) {
+            if (s.quarantined) {
+                tr.className = "row-danger";
+                statusBadge = `<span class="badge badge-red" style="font-weight: 700; box-shadow: 0 0 8px rgba(220, 38, 38, 0.5);">QUARANTINED (PORT ${s.quarantine_port || '?'} CUT OFF)</span>`;
+                roleBadge = '<span class="badge badge-red">Attacker [Isolated]</span>';
+                pseudoColor = "#ef4444";
+            } else if (isRogue) {
                 tr.className = "row-danger";
                 statusBadge = '<span class="badge badge-red">ROGUE ATTACKER</span>';
                 roleBadge = '<span class="badge badge-red">Rogue Attacker</span>';

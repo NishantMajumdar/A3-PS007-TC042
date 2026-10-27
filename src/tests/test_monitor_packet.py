@@ -42,6 +42,11 @@ class TestMonitorPacketProcessing(unittest.TestCase):
         self.assertIn("ROGUE_RA", alert.alert_type)
         self.assertEqual(alert.pseudonym, record["pseudonym"])
 
+        # Verify auto-quarantine isolated port 4
+        self.assertTrue(record.get("quarantined"))
+        self.assertEqual(record.get("quarantine_port"), 4)
+        self.assertIn(4, monitor.quarantined_ports)
+
     def test_rogue_ra_arbitrary_port_8_does_not_crash(self):
         """Simulate an attacker on port 8 (wire VLAN 12, or 4108) sending rogue RA."""
         fake_ra = (
@@ -59,6 +64,16 @@ class TestMonitorPacketProcessing(unittest.TestCase):
         record = monitor.session_records[sid]
         self.assertEqual(record["status"], "ROGUE ATTACKER")
         self.assertTrue(record["is_rogue"])
+        self.assertTrue(record.get("quarantined"))
+        self.assertEqual(record.get("quarantine_port"), 8)
+        self.assertIn(8, monitor.quarantined_ports)
+
+    def test_infrastructure_ports_never_quarantined(self):
+        """Verify that port 1 (router) and port 2 (monitor) can never be quarantined."""
+        self.assertFalse(monitor.quarantine_switch_port(1, "test router"))
+        self.assertFalse(monitor.quarantine_switch_port(2, "test monitor"))
+        self.assertNotIn(1, monitor.quarantined_ports)
+        self.assertNotIn(2, monitor.quarantined_ports)
 
     def test_router_port_1_ndp_not_flagged_as_attacker(self):
         """Verify router r1 (port 1 / wire VLAN 5) resolving client targets is not flagged as attacker."""
