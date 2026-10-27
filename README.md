@@ -117,7 +117,7 @@ docker run -it --privileged \
 xhost +local:root && docker run -it --privileged -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix:rw -v /lib/modules:/lib/modules:ro -p 5000:5000 -p 8765:8765 nishantmajumdar/ps007-ipv6-monitor:latest
 ```
 
-*(Or if you have cloned this repository: `xhost +local:root && docker compose run --rm --service-ports ps007-monitor`)*
+*(Or if you have cloned this repository: `cd src && xhost +local:root && docker compose run --rm --service-ports ps007-monitor`)*
 
 ---
 

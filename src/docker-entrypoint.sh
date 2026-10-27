@@ -31,7 +31,7 @@ rm -rf /tmp/mininet_pids /tmp/radvd.pid /tmp/radvd.log /tmp/ps007_state.json*
 # Allow custom commands (e.g. interactive bash, unit tests, or flags to topology)
 if [ "$#" -gt 0 ] && [ "$1" != "default" ]; then
     if [[ "$1" == -* ]]; then
-        cd /app/src
+        [ -d "/app/src" ] && cd /app/src || cd /app
         exec python3 ps007_topology.py "$@"
     fi
     exec "$@"
@@ -40,5 +40,5 @@ fi
 echo "[+] Open vSwitch is active."
 echo "[+] Starting Mininet Topology..."
 
-cd /app/src
+[ -d "/app/src" ] && cd /app/src || cd /app
 exec python3 ps007_topology.py

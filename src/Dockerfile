@@ -40,8 +40,8 @@ WORKDIR /app
 ARG CACHEBUST=1
 COPY . /app
 
-# Grant execution rights to entrypoint script
-RUN chmod +x /app/docker-entrypoint.sh
+# Grant execution rights to entrypoint script (supporting builds from root or src)
+RUN if [ -f /app/docker-entrypoint.sh ]; then chmod +x /app/docker-entrypoint.sh; elif [ -f /app/src/docker-entrypoint.sh ]; then chmod +x /app/src/docker-entrypoint.sh && cp /app/src/docker-entrypoint.sh /app/docker-entrypoint.sh; fi
 
 # Expose ports for Web SOC UI and WebSocket stream
 EXPOSE 5000 8765
