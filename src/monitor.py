@@ -190,6 +190,53 @@ def unquarantine_switch_port(port: int, bridge: str = OVS_BRIDGE) -> bool:
         except Exception:
             return False
 
+def process_ipc_control_commands():
+    """
+    Checks for external IPC control commands (e.g., from the Flask Web SOC Dashboard)
+    to perform interactive remediation actions like un-quarantining a switch port.
+    """
+    ctl_file = "/tmp/ps007_ctl.json"
+    if not os.path.exists(ctl_file):
+        return
+    try:
+        with open(ctl_file, "r") as f:
+            data = json.load(f)
+        try:
+            os.remove(ctl_file)
+        except Exception:
+            pass
+
+        action = data.get("action")
+        if action == "unquarantine":
+            port = data.get("port")
+            sid = data.get("session_id")
+            if port:
+                unquarantine_switch_port(port)
+                with db_lock:
+                    target_sids = set()
+                    if sid:
+                        target_sids.add(sid)
+                    target_sids.add(f"SES-PORT{port:02d}")
+                    for s_key, s_val in session_records.items():
+                        if s_val.get("quarantine_port") == port or s_key in target_sids:
+                            s_val["quarantined"] = False
+                            s_val["is_rogue"] = False
+                            s_val["status"] = "AUTHENTICATED"
+                            s_val["role"] = "IoT Device"
+                    ts = datetime.datetime.now().strftime("%H:%M:%S")
+                    event = (ts, "[RESTORE]", C_GREEN, f"PORT {port} UN-QUARANTINED by Admin - Connectivity restored")
+                    latest_events.insert(0, event)
+                    if len(latest_events) > 5:
+                        latest_events.pop()
+                telemetry.emit("unquarantine", {
+                    "port": port,
+                    "session_id": sid or f"SES-PORT{port:02d}",
+                    "message": "Port un-quarantined by administrator",
+                    "timestamp": time.time()
+                })
+    except Exception:
+        pass
+
 for i, arg in enumerate(sys.argv):
     if arg in ("--port", "--web-port") and i + 1 < len(sys.argv):
         try:
@@ -635,6 +682,9 @@ def display_dashboard():
         uptime_str = f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
         now = time.time()
+        # Process any pending admin IPC commands (e.g. un-quarantine from Web UI)
+        process_ipc_control_commands()
+
         # Periodically purge expired pseudonym mappings & detector states
         if int(now) % 5 == 0:
             purge_stats = pseudonym_mgr.purge(now)

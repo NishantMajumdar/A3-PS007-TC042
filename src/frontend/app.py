@@ -13,6 +13,8 @@ import sys
 import json
 import time
 import argparse
+import subprocess
+import shutil
 # Ensure user site-packages are accessible even when running as root or inside Mininet namespaces
 for user_site in [
     "/home/nishantm/.local/lib/python3.14/site-packages",
@@ -225,6 +227,69 @@ def privacy_audit():
             "hardware_fingerprinting_disabled": True
         },
         "inspected_records": len(state.get("sessions", []))
+    })
+
+
+@app.route("/api/quarantine/release", methods=["GET", "POST"])
+def release_quarantine():
+    """
+    Releases OpenFlow quarantine isolation for a switch port or session ID.
+    1. Direct OpenFlow rule deletion on switch s1.
+    2. Writes control message to /tmp/ps007_ctl.json for monitor.py IPC.
+    """
+    port = request.args.get("port", type=int)
+    session_id = request.args.get("session_id", type=str)
+
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        port = port or data.get("port")
+        session_id = session_id or data.get("session_id")
+
+    if not port and session_id and session_id.startswith("SES-PORT"):
+        try:
+            port = int(session_id[8:])
+        except ValueError:
+            pass
+
+    if not port:
+        return jsonify({"status": "error", "message": "Missing port or valid session_id"}), 400
+
+    # 1. Direct OVS flow removal
+    cmd = ["ovs-ofctl", "-O", "OpenFlow13", "del-flows", "s1", f"table=0,in_port={port},priority=65000"]
+    ovs_success = False
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=2.0)
+        ovs_success = (res.returncode == 0)
+    except Exception:
+        pass
+    if not ovs_success and shutil.which("nsenter") and os.geteuid() == 0:
+        try:
+            res = subprocess.run(["nsenter", "-t", "1", "-n"] + cmd, capture_output=True, text=True, timeout=2.0)
+            ovs_success = (res.returncode == 0)
+        except Exception:
+            pass
+
+    # 2. Notify monitor.py via IPC control file
+    ctl_file = "/tmp/ps007_ctl.json"
+    try:
+        ctl_data = {
+            "action": "unquarantine",
+            "port": port,
+            "session_id": session_id,
+            "timestamp": time.time()
+        }
+        with open(ctl_file + ".tmp", "w") as f:
+            json.dump(ctl_data, f)
+        os.replace(ctl_file + ".tmp", ctl_file)
+    except Exception:
+        pass
+
+    return jsonify({
+        "status": "ok",
+        "port": port,
+        "session_id": session_id,
+        "ovs_success": ovs_success,
+        "message": f"Port {port} un-quarantined successfully. Connectivity restored."
     })
 
 

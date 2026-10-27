@@ -482,6 +482,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td><span class="badge">0x</span></td>
                 <td>${data.router.pkts || 0}</td>
                 <td>Port 1 (wire: 5)</td>
+                <td><span style="color: var(--text-dim); font-size: 11px;">Protected</span></td>
             `;
             tbody.appendChild(tr);
         }
@@ -490,7 +491,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (sessions.length === 0 && unauths.length === 0) {
             const tr = document.createElement("tr");
             tr.innerHTML = `
-                <td colspan="7" style="text-align: center; color: var(--text-dim); padding: 25px;">
+                <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 25px;">
                     Waiting for IoT client devices (identifying dynamically via RFC 4862 DAD)...
                 </td>
             `;
@@ -507,12 +508,15 @@ document.addEventListener("DOMContentLoaded", () => {
             let statusBadge = '<span class="badge badge-green">ACTIVE</span>';
             let roleBadge = '<span class="badge badge-accent">IoT Device</span>';
             let pseudoColor = "var(--text-main)";
+            let actionCell = '<td><span style="color: #2e7d32; font-size: 11px; font-weight: 600;">Monitored</span></td>';
 
             if (s.quarantined) {
                 tr.className = "row-danger";
                 statusBadge = `<span class="badge badge-red" style="font-weight: 700; box-shadow: 0 0 8px rgba(220, 38, 38, 0.5);">QUARANTINED (PORT ${s.quarantine_port || '?'} CUT OFF)</span>`;
                 roleBadge = '<span class="badge badge-red">Attacker [Isolated]</span>';
                 pseudoColor = "#ef4444";
+                const portArg = s.quarantine_port || (s.session_id.startsWith("SES-PORT") ? parseInt(s.session_id.substring(8)) : "null");
+                actionCell = `<td><button class="btn btn-sm" onclick="window.unquarantinePort(${portArg}, '${s.session_id}')" style="background: #dc2626; color: #fff; border: none; border-radius: 4px; padding: 3px 8px; font-weight: 700; cursor: pointer; font-size: 11px; box-shadow: 0 2px 4px rgba(220, 38, 38, 0.4);">Restore Port</button></td>`;
             } else if (isRogue) {
                 tr.className = "row-danger";
                 statusBadge = '<span class="badge badge-red">ROGUE ATTACKER</span>';
@@ -530,6 +534,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td><span class="badge badge-purple">${s.rotations || 0}x</span></td>
                 <td>${s.pkts || 0}</td>
                 <td><code>${s.session_id}</code></td>
+                ${actionCell}
             `;
             tbody.appendChild(tr);
         }
@@ -548,6 +553,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td><span class="badge">0x</span></td>
                 <td>${u.pkts || 0}</td>
                 <td><code>${u.session_id || "---"}</code></td>
+                <td><span style="color: var(--text-dim); font-size: 11px;">---</span></td>
             `;
             tbody.appendChild(tr);
         }
@@ -800,3 +806,40 @@ document.addEventListener("DOMContentLoaded", () => {
     // Regular state synchronization every 1.5 seconds
     setInterval(fetchState, 1500);
 });
+
+// Global remediation action handler for un-quarantining switch ports
+window.unquarantinePort = async function(port, sessionId) {
+    if (!port && sessionId && sessionId.startsWith("SES-PORT")) {
+        try {
+            port = parseInt(sessionId.substring(8));
+        } catch(e) {}
+    }
+    if (!port) {
+        alert("Unable to determine port number for session: " + sessionId);
+        return;
+    }
+    if (!confirm(`Confirm OpenFlow Remediation:\n\nRestore traffic forwarding for Switch Port ${port} (${sessionId || 'Attacker'})?`)) {
+        return;
+    }
+    try {
+        const res = await fetch(`/api/quarantine/release?port=${port}&session_id=${sessionId || ''}`, {
+            method: "POST"
+        });
+        const data = await res.json();
+        if (data.status === "ok") {
+            alert(`[SUCCESS] Port ${port} un-quarantined successfully!\nSDN drop rule removed from switch s1.`);
+            // Trigger quick refresh
+            setTimeout(() => {
+                if (typeof window.location !== "undefined") {
+                    fetch("/api/state").then(r => r.json()).then(d => {
+                        if (window.renderClientsTable) window.renderClientsTable(d);
+                    }).catch(() => {});
+                }
+            }, 300);
+        } else {
+            alert(`[ERROR] ${data.message}`);
+        }
+    } catch (err) {
+        alert(`[ERROR] Network error contacting server: ${err.message}`);
+    }
+};

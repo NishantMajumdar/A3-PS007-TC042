@@ -116,6 +116,19 @@ class NetworkTopologyVisualizer {
         this.canvas.addEventListener('mouseleave', () => {
             this.hoveredNode = null;
         });
+
+        this.canvas.addEventListener('click', () => {
+            if (this.hoveredNode && this.hoveredNode.quarantined) {
+                const node = this.hoveredNode;
+                let port = null;
+                if (node.sessionId && node.sessionId.startsWith("SES-PORT")) {
+                    try { port = parseInt(node.sessionId.substring(8)); } catch(err) {}
+                }
+                if (window.unquarantinePort) {
+                    window.unquarantinePort(port, node.sessionId);
+                }
+            }
+        });
     }
 
     /**

@@ -75,6 +75,52 @@ class TestMonitorPacketProcessing(unittest.TestCase):
         self.assertNotIn(1, monitor.quarantined_ports)
         self.assertNotIn(2, monitor.quarantined_ports)
 
+    def test_unquarantine_switch_port_and_ipc_restore(self):
+        """Verify manual/IPC un-quarantine restores session state and clears drop rules."""
+        import json
+        import os
+
+        # 1. Simulate an attack on port 4
+        monitor.quarantine_switch_port(4, "test rogue")
+        self.assertIn(4, monitor.quarantined_ports)
+
+        sid = "SES-PORT04"
+        monitor.session_records[sid] = {
+            "role": "Rogue Attacker",
+            "status": "ROGUE ATTACKER",
+            "session_id": sid,
+            "pseudonym": "TEST1234",
+            "active_ip": "fd00:abcd::4",
+            "ip_history": ["fd00:abcd::4"],
+            "pkts": 10,
+            "rotations": 0,
+            "is_rogue": True,
+            "quarantined": True,
+            "quarantine_port": 4
+        }
+
+        # 2. Write IPC control command to un-quarantine port 4
+        ctl_path = "/tmp/ps007_ctl.json"
+        with open(ctl_path, "w") as f:
+            json.dump({"action": "unquarantine", "port": 4, "session_id": sid}, f)
+
+        # 3. Process IPC command
+        monitor.process_ipc_control_commands()
+
+        # 4. Verify port 4 removed from quarantined_ports
+        self.assertNotIn(4, monitor.quarantined_ports)
+
+        # 5. Verify session restored to benign authenticated state
+        rec = monitor.session_records[sid]
+        self.assertFalse(rec.get("quarantined"))
+        self.assertFalse(rec.get("is_rogue"))
+        self.assertEqual(rec.get("status"), "AUTHENTICATED")
+        self.assertEqual(rec.get("role"), "IoT Device")
+
+        # 6. Verify [RESTORE] event in event stream
+        self.assertTrue(any("[RESTORE]" in str(ev) for ev in monitor.latest_events))
+        self.assertFalse(os.path.exists(ctl_path))
+
     def test_router_port_1_ndp_not_flagged_as_attacker(self):
         """Verify router r1 (port 1 / wire VLAN 5) resolving client targets is not flagged as attacker."""
         from scapy.all import ICMPv6ND_NS
