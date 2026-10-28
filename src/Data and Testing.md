@@ -314,10 +314,6 @@ To meet strict zero-trust privacy mandates, PS-007 guarantees data minimization 
 └───────────────────────────────────────────────┘
 ```
 
-#### Compliance Verification
-The privacy guarantee is mathematically audited via `/api/privacy_audit`:
-* Evaluates all active session records against the regular expression `^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$`.
-* Result: `mac_addresses_stored: 0`, `zero_mac_leakage: true`.
 
 ---
 
@@ -340,10 +336,3 @@ Table 0 Flow Hierarchy:
 * **Remediation Latency:** Deletion of rule via `/api/quarantine/release` restores line-rate forwarding in $\le 4.2\text{ ms}$.
 
 ---
-
-## 4. Summary for Technical Defense & Judging
-
-1. **Theoretical Grounding:** Proved mathematically that per-IP monitoring has a detection rate of zero against rotating attacks, whereas PS-007 maintains a detection rate of 100%.
-2. **Empirical Rigor:** Backed by $\ge 30$ trials per scenario demonstrating $p_{95}$ latency $\le 750\text{ ms}$, TPR $= 100\%$, and FPR $= 0.0\%$.
-3. **Privacy Integrity:** Zero hardware MAC storage cryptographically validated; epoch key memory wiping provides forward secrecy.
-4. **Active Defense:** Fully closed-loop SDN detection, auto-quarantine, and administrative remediation.

@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.log
 /tmp/
+/src/events.jsonl
+/src/state_snapshot.json
+src/events.jsonl
