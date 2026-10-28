@@ -24,6 +24,7 @@
 7. [Adversary Models & Attack Scenarios](#7-adversary-models--attack-scenarios)
 8. [REST API & Telemetry Event Schema](#8-rest-api--telemetry-event-schema)
 9. [Zero-MAC Compliance Verification Command](#9-zero-mac-compliance-verification-command)
+10. [Mathematical Foundations, Benchmark Findings & Comparisons](MATH_AND_FINDINGS.md)
 
 ---
 

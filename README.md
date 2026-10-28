@@ -31,7 +31,8 @@ In traditional Network Intrusion Detection Systems (NIDS), operators track rotat
 6. **Active SDN Defense & Port Auto-Quarantine:** When an attacker is proven (Rogue RA injection or rotating NDP flood), the monitor triggers OpenFlow 1.3 mitigation on switch `s1` (`table=0,priority=65000,in_port={port},actions=drop`), immediately severing the offending port from the network at wire speed.
 7. **Integrated Web SOC Dashboard:** Clean monitoring web dashboard running on Flask, packaged directly into `monitor.py` on `http://localhost:5000` with dedicated pages for client tracking, 2D topology mapping, attack logs, live stream console, and IP rotation chains.
 
-For complete architectural specifications, module descriptions, and formal security guarantees, see [`src/README.md`](src/README.md).
+For complete architectural specifications, module descriptions, and formal security guarantees, see [`src/README.md`](src/README.md).  
+For the complete mathematical formulations, empirical benchmark sweeps, and defense comparison matrices, see [`src/MATH_AND_FINDINGS.md`](src/MATH_AND_FINDINGS.md).
 
 ---
 
